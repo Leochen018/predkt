@@ -1,0 +1,5 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0d0d0f; }
+input[type="range"] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: #2a2a32; outline: none; cursor: pointer; width: 100%; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #6c63ff; cursor: pointer; }
+input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: #6c63ff; cursor: pointer; border: none; }
