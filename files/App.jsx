@@ -1,15 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "./lib/supabase";
-import { getDifficulty, calcPointsWin, calcPointsLoss, getValueLabel, calcPointsWinCapped, getPointsBreakdown, getFormulaExplanation } from "./lib/scoring";
+import { getDifficulty, calcPointsWin, calcPointsLoss, getValueLabel, getPointsBreakdown, getFormulaExplanation, getStreakMultiplier, getDailyBonus } from "./lib/scoring";
 import { fetchMatches as fetchMatchesAPI, fetchOdds as fetchOddsAPI } from "./lib/clientApi";
 import { requestNotificationPermission, scheduleMatchReminder } from "./lib/notifications";
 
-// ─── Streak helpers (inline to avoid server-only import issues) ───
-function getStreakMultiplier(streak) {
-  if (streak >= 5) return 2.0;
-  if (streak >= 3) return 1.5;
-  return 1.0;
-}
+// ─── Streak label helper ──────────────────────────────────────────
 function getStreakLabel(streak) {
   if (streak >= 5) return { label: streak + " streak", color: "#ef4444" };
   if (streak >= 3) return { label: streak + " streak", color: "#f59e0b" };
@@ -174,6 +169,8 @@ export default function App() {
 
   // ── Debounce ref for user search (prevents DB call on every keystroke) ──
   const searchTimerRef = useRef(null);
+  const lbScrollRef    = useRef(null);  // ref for leaderboard scroll container
+  const lbRowRefs      = useRef({});    // ref map: userId → row element
 
   // ── Memoised derivations — only recompute when their inputs change ──
 
@@ -298,11 +295,12 @@ export default function App() {
 
   const difficulty      = selectedMarket ? getDifficulty(selectedMarket.label) : null;
   const streakCount     = profile?.current_streak || 0;
+  const dailyStreak     = profile?.daily_streak || 0;
   const streakMult      = getStreakMultiplier(streakCount + 1);
-  const basePointsToWin = selectedMarket ? calcPointsWinCapped(selectedMarket.odds, conf, difficulty?.key) : 0;
-  const pointsToWin     = Math.round(basePointsToWin * streakMult);
-  const pointsToLose    = selectedMarket ? calcPointsLoss(conf, difficulty?.multiplier || 1, difficulty?.key) : 0;
-  const pointsBreakdown = selectedMarket ? getPointsBreakdown(selectedMarket.odds, conf, difficulty?.key) : null;
+  const dailyBonus      = getDailyBonus(dailyStreak);
+  const pointsToWin     = selectedMarket ? calcPointsWin(selectedMarket.odds, conf, streakCount + 1, dailyStreak) : 0;
+  const pointsToLose    = selectedMarket ? calcPointsLoss(selectedMarket.odds, conf) : 0;
+  const pointsBreakdown = selectedMarket ? getPointsBreakdown(selectedMarket.odds, conf, streakCount + 1, dailyStreak) : null;
 
   // ── Profile screen loader ──────────────────────────────────────
   async function openProfile(profileId) {
@@ -503,10 +501,8 @@ export default function App() {
   }
 
   async function updatePickConfidence(pick, newConf) {
-    const diff      = getDifficulty(pick.market);
-    const cappedWin = calcPointsWinCapped(pick.odds, newConf, diff?.key);
-    const finalWin  = Math.round(cappedWin * getStreakMultiplier((profile?.current_streak || 0) + 1));
-    const finalLoss = calcPointsLoss(newConf, diff?.multiplier || 1, diff?.key);
+    const finalWin  = calcPointsWin(pick.odds, newConf, (profile?.current_streak || 0) + 1, profile?.daily_streak || 0);
+    const finalLoss = calcPointsLoss(pick.odds, newConf);
     const { data, error } = await supabase.from("picks").update({
       confidence:      newConf,
       points_possible: finalWin,
@@ -914,9 +910,8 @@ export default function App() {
     setLoading(true); setError("");
     if (myPicks.length >= 5) { setError("Daily limit reached — 5 predictions per day maximum."); setLoading(false); return; }
     const diff      = getDifficulty(selectedMarket.label);
-    const cappedWin = calcPointsWinCapped(selectedMarket.odds, conf, diff.key);
-    const finalWin  = Math.round(cappedWin * streakMult);
-    const finalLoss = calcPointsLoss(conf, diff.multiplier);
+    const finalWin  = calcPointsWin(selectedMarket.odds, conf, streakCount + 1, dailyStreak);
+    const finalLoss = calcPointsLoss(selectedMarket.odds, conf);
 
     const { error } = await supabase.from("picks").insert({
       user_id: user?.id, match: match.home + " vs " + match.away,
@@ -1046,13 +1041,12 @@ export default function App() {
     if (!betslip.length) return;
     setLoading(true); setError("");
     if (myPicks.length >= 5) { setError("Daily limit reached — 5 predictions per day maximum."); setLoading(false); return; }
-    const diff = getDifficulty(betslip[0].label);
     const combinedOdds = parseFloat(betslip.reduce((acc, p) => acc * (p.odds || 2.0), 1).toFixed(2));
-    const accaBase   = Math.round(50 * Math.log2(combinedOdds + 1) * (conf / 100) * 1.5);
-    const accaPoints = Math.min(Math.round(accaBase * streakMult), 400);
-    const accaLoss   = Math.round(calcPointsLoss(conf, 1) * betslip.length);
-    const label      = betslip.map(p => p.label).join(" + ");
-    const matchLabel = betslip.map(p => p.matchLabel).join(" / ");
+    const accaPoints   = calcPointsWin(combinedOdds, conf, streakCount + 1, dailyStreak);
+    const accaLoss     = calcPointsLoss(combinedOdds, conf);
+    const label        = betslip.map(p => p.label).join(" + ");
+    const matchLabel   = betslip.map(p => p.matchLabel).join(" / ");
+    const diff         = getDifficulty(betslip[0].label);
 
     const { error } = await supabase.from("picks").insert({
       user_id: user?.id,
@@ -1919,67 +1913,125 @@ export default function App() {
 
       {/* ── Leaderboard ──────────────────────────────────── */}
       {screen === "leaderboard" && (
-        <div style={s.screen}>
+        <div style={{ ...s.screen, position: "relative" }}>
+          {/* Fixed header */}
           <div style={s.header}>
             <span style={s.logo}>Leaderboard</span>
             <button onClick={() => loadLeaderboard(lbTab)} style={{ background: "none", border: "none", color: "#6c63ff", fontSize: 12, cursor: "pointer" }}>Refresh</button>
           </div>
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-            <div style={{ padding: "12px 16px 0" }}>
-              <div style={s.toggle}>
-                {["weekly","alltime"].map(t => (
-                  <button key={t} onClick={() => setLbTab(t)} style={{ ...s.toggleBtn, ...(lbTab===t ? s.toggleBtnOn : {}) }}>
-                    {t === "weekly" ? "This week" : "All time"}
-                  </button>
-                ))}
-              </div>
-              {/* Trial mode banner */}
-              {profile?.is_anonymous && (
-                <div style={{ background: "#f59e0b12", border: "0.5px solid #f59e0b44", borderRadius: 10, padding: "10px 12px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <p style={{ margin: "0 0 2px", fontSize: 12, fontWeight: 700, color: "#f59e0b" }}>👻 Trial account</p>
-                    <p style={{ margin: 0, fontSize: 11, color: "#4a4958" }}>Add email to save permanently</p>
-                  </div>
-                  <button onClick={() => { setEmail(""); setPassword(""); setAuthScreen("upgrade"); }} style={{ background: "#f59e0b", border: "none", color: "#000", fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer", flexShrink: 0 }}>Save</button>
+
+          {/* Fixed toggle + trial banner */}
+          <div style={{ padding: "10px 16px 0", flexShrink: 0 }}>
+            <div style={s.toggle}>
+              {["weekly","alltime"].map(t => (
+                <button key={t} onClick={() => setLbTab(t)} style={{ ...s.toggleBtn, ...(lbTab===t ? s.toggleBtnOn : {}) }}>
+                  {t === "weekly" ? "This week" : "All time"}
+                </button>
+              ))}
+            </div>
+            {profile?.is_anonymous && (
+              <div style={{ background: "#f59e0b12", border: "0.5px solid #f59e0b44", borderRadius: 10, padding: "10px 12px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <p style={{ margin: "0 0 2px", fontSize: 12, fontWeight: 700, color: "#f59e0b" }}>👻 Trial account</p>
+                  <p style={{ margin: 0, fontSize: 11, color: "#4a4958" }}>Add email to save permanently</p>
                 </div>
-              )}
-              {lbLoading && <p style={{ fontSize: 13, color: "#4a4958", padding: "8px 0" }}>Loading...</p>}
-              {!lbLoading && lbData.length === 0 && <p style={{ fontSize: 13, color: "#4a4958", padding: "8px 0" }}>No data yet — make some picks!</p>}
-              {!lbLoading && lbData.map((p, i) => {
-                const isMe   = p.id === user?.id;
-                const pts    = lbTab === "weekly" ? p.weekly_points : p.total_points;
-                const isTop3 = i < 3;
-                const medals = ["🥇","🥈","🥉"];
-                return (
-                  <button key={p.id} onClick={() => openProfile(p.id)} style={{ ...s.card, border: isMe ? "0.5px solid #6c63ff" : "0.5px solid #2a2a32", background: isMe ? "#6c63ff0a" : "#1a1a1f", marginBottom: 8, width: "100%", cursor: "pointer", textAlign: "left" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <div style={{ width: 32, textAlign: "center", flexShrink: 0 }}>
-                        {isTop3 ? <span style={{ fontSize: 18 }}>{medals[i]}</span> : <span style={{ fontSize: 13, color: "#4a4958", fontWeight: 600 }}>{i+1}</span>}
+                <button onClick={() => { setEmail(""); setPassword(""); setAuthScreen("upgrade"); }} style={{ background: "#f59e0b", border: "none", color: "#000", fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer", flexShrink: 0 }}>Save</button>
+              </div>
+            )}
+          </div>
+
+          {/* Scrollable rankings list */}
+          <div ref={lbScrollRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "4px 16px 8px" }}>
+            {lbLoading && <p style={{ fontSize: 13, color: "#4a4958", padding: "8px 0" }}>Loading...</p>}
+            {!lbLoading && lbData.length === 0 && <p style={{ fontSize: 13, color: "#4a4958", padding: "8px 0" }}>No data yet — make some picks!</p>}
+            {!lbLoading && lbData.map((p, i) => {
+              const isMe   = p.id === user?.id;
+              const pts    = lbTab === "weekly" ? p.weekly_points : p.total_points;
+              const isTop3 = i < 3;
+              const medals = ["🥇","🥈","🥉"];
+              return (
+                <button
+                  key={p.id}
+                  ref={el => { lbRowRefs.current[p.id] = el; }}
+                  onClick={() => openProfile(p.id)}
+                  style={{ ...s.card, border: isMe ? "1.5px solid #6c63ff" : "0.5px solid #2a2a32", background: isMe ? "#1a1430" : "#1a1a1f", marginBottom: 8, width: "100%", cursor: "pointer", textAlign: "left" }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ width: 32, textAlign: "center", flexShrink: 0 }}>
+                      {isTop3 ? <span style={{ fontSize: 18 }}>{medals[i]}</span> : <span style={{ fontSize: 13, color: "#4a4958", fontWeight: 600 }}>{i+1}</span>}
+                    </div>
+                    <div style={{ ...s.avatar, width: 36, height: 36, fontSize: 13, background: isMe ? "linear-gradient(135deg,#6c63ff,#8a83ff)" : "#1e1e2a", border: "none", color: isMe ? "#fff" : "#8b8a99" }}>
+                      {p.username?.[0]?.toUpperCase() ?? "?"}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: isMe ? "#c4c0ff" : "#f0eff8" }}>{p.username ?? "Unknown"}</p>
+                        {isMe && <span style={{ fontSize: 10, color: "#fff", fontWeight: 700, background: "#6c63ff", padding: "1px 6px", borderRadius: 99 }}>you</span>}
+                        {p.current_streak >= 3 && <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 99, background: "#ef444420", color: "#ef4444" }}>{p.current_streak >= 5 ? "🔥" : "⚡"}{p.current_streak}</span>}
                       </div>
-                      <div style={{ ...s.avatar, width: 36, height: 36, fontSize: 13, background: isMe ? "#6c63ff22" : "#1a1a2f", border: `0.5px solid ${isMe ? "#6c63ff66" : "#2a2a32"}`, color: isMe ? "#8a83ff" : "#8b8a99" }}>
-                        {p.username?.[0]?.toUpperCase() ?? "?"}
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: isMe ? "#8a83ff" : "#f0eff8" }}>{p.username ?? "Unknown"}</p>
-                          {isMe && <span style={{ fontSize: 10, color: "#6c63ff", fontWeight: 600 }}>you</span>}
-                          {p.current_streak >= 3 && <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 99, background: "#ef444420", color: "#ef4444" }}>{p.current_streak >= 5 ? "🔥" : "⚡"}{p.current_streak}</span>}
-                        </div>
-                        <div style={{ display: "flex", gap: 10, marginTop: 2 }}>
-                          <span style={{ fontSize: 11, color: "#4a4958" }}>{p.total} picks</span>
-                          {p.accuracy != null && <span style={{ fontSize: 11, color: "#4a4958" }}>{p.accuracy}% accuracy</span>}
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right", flexShrink: 0 }}>
-                        <p style={{ margin: 0, fontSize: 18, fontWeight: 700, color: isTop3 ? "#f59e0b" : isMe ? "#8a83ff" : "#f0eff8" }}>{pts ?? 0}</p>
-                        <p style={{ margin: 0, fontSize: 11, color: "#4a4958" }}>pts</p>
+                      <div style={{ display: "flex", gap: 10, marginTop: 2 }}>
+                        <span style={{ fontSize: 11, color: "#4a4958" }}>{p.total} picks</span>
+                        {p.accuracy != null && <span style={{ fontSize: 11, color: "#4a4958" }}>{p.accuracy}% accuracy</span>}
                       </div>
                     </div>
-                  </button>
-                );
-              })}
-            </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <p style={{ margin: 0, fontSize: 18, fontWeight: 700, color: isTop3 ? "#f59e0b" : isMe ? "#8a83ff" : "#f0eff8" }}>{pts ?? 0}</p>
+                      <p style={{ margin: 0, fontSize: 11, color: "#4a4958" }}>pts</p>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
+
+          {/* Your card — pinned above BottomNav, taps scroll to your row then opens profile */}
+          {user && profile && !profile.is_anonymous && (() => {
+            const myEntry = lbData.find(p => p.id === user.id);
+            const myPts   = lbTab === "weekly" ? profile.weekly_points : profile.total_points;
+            const myRank  = myEntry?.rank ?? null;
+
+            function scrollToMe() {
+              const row = lbRowRefs.current[user.id];
+              if (row && lbScrollRef.current) {
+                row.scrollIntoView({ behavior: "smooth", block: "center" });
+                row.style.transition = "background 0.3s";
+                row.style.background = "#3a2f6a";
+                setTimeout(() => { row.style.background = "#1a1430"; }, 700);
+              }
+            }
+
+            return (
+              <button onClick={scrollToMe} style={{ flexShrink: 0, width: "100%", background: "linear-gradient(180deg, #131120 0%, #0e0d16 100%)", borderTop: "1px solid #6c63ff44", padding: "10px 16px 12px", cursor: "pointer", textAlign: "left", display: "block" }}>
+                <div style={{ width: 32, height: 4, borderRadius: 2, background: "#6c63ff44", margin: "0 auto 10px" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 32, textAlign: "center", flexShrink: 0 }}>
+                    {myRank && myRank <= 3
+                      ? <span style={{ fontSize: 20 }}>{["🥇","🥈","🥉"][myRank - 1]}</span>
+                      : <span style={{ fontSize: 15, fontWeight: 800, color: "#8a83ff" }}>#{myRank ?? "—"}</span>
+                    }
+                  </div>
+                  <div style={{ width: 40, height: 40, borderRadius: "50%", background: "linear-gradient(135deg,#6c63ff,#8a83ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 800, color: "#fff", flexShrink: 0 }}>
+                    {profile.username?.[0]?.toUpperCase() ?? "?"}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#c4c0ff" }}>{profile.username}</p>
+                      <span style={{ fontSize: 10, color: "#fff", fontWeight: 700, background: "#6c63ff", padding: "1px 6px", borderRadius: 99 }}>you</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 10, marginTop: 2 }}>
+                      {myEntry?.accuracy != null && <span style={{ fontSize: 11, color: "#4a4958" }}>{myEntry.accuracy}% accuracy</span>}
+                      {(profile.current_streak || 0) >= 1 && <span style={{ fontSize: 11, color: profile.current_streak >= 5 ? "#ef4444" : profile.current_streak >= 3 ? "#f59e0b" : "#22c55e" }}>{profile.current_streak >= 5 ? "🔥" : "⚡"} {profile.current_streak} streak</span>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <p style={{ margin: 0, fontSize: 22, fontWeight: 800, color: "#8a83ff" }}>{myPts ?? 0}</p>
+                    <p style={{ margin: 0, fontSize: 10, color: "#6c63ff" }}>tap to find position ↑</p>
+                  </div>
+                </div>
+              </button>
+            );
+          })()}
+
           <BottomNav screen={screen} setScreen={id => { if (id === "profile") setViewingProfile(null); setScreen(id); }} nav={NAV} />
         </div>
       )}
@@ -2487,7 +2539,7 @@ export default function App() {
                         const monthStr  = dt.toLocaleDateString("en-GB", { month: "short" });
                         const matchCount = dateMatchCounts[d] || 0;
                         return (
-                          <button key={d} onClick={() => { setSelectedDate(d); setMatchSearch(""); }} style={{ flexShrink: 0, padding: "8px 10px", borderRadius: 10, border: isActive ? "none" : "0.5px solid #1e1e2a", background: isActive ? "linear-gradient(135deg, #6c63ff, #8a83ff)" : "#111118", cursor: "pointer", textAlign: "center", minWidth: 54, boxShadow: isActive ? "0 4px 14px #6c63ff40" : "none" }}>
+                          <button key={d} onClick={() => { setSelectedDate(d); setMatchSearch(""); }} style={{ flexShrink: 0, padding: "8px 10px", borderRadius: 10, border: isActive ? "none" : "0.5px solid #1e1a2e", background: isActive ? "linear-gradient(135deg, #6c63ff, #8a83ff)" : "#13111e", cursor: "pointer", textAlign: "center", minWidth: 54, boxShadow: isActive ? "0 4px 14px #6c63ff40" : "none" }}>
                             <p style={{ margin: 0, fontSize: 9, color: isActive ? "rgba(255,255,255,0.75)" : "#4a4958", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>{dayLabel}</p>
                             <p style={{ margin: "3px 0 1px", fontSize: 18, fontWeight: 900, color: isActive ? "#fff" : "#c8c7d4", lineHeight: 1 }}>{dateNum}</p>
                             <p style={{ margin: 0, fontSize: 9, color: isActive ? "rgba(255,255,255,0.75)" : "#4a4958", fontWeight: 600 }}>{monthStr}</p>
@@ -2578,7 +2630,7 @@ export default function App() {
                                   const market = markets.flatMap(g => g.options).find(o => o.key === pk || pk.includes(o.key) || o.key.includes(pk));
                                   if (market) handleAddToSlip(market, activeMatch.id, activeMatch.home + " vs " + activeMatch.away, "Builder");
                                 });
-                              }} style={{ flexShrink: 0, background: allIn ? "#1a1200" : "#111118", border: allIn ? "1.5px solid #f59e0b" : "0.5px solid #1e1e28", borderRadius: 10, padding: "8px 12px", cursor: "pointer", textAlign: "left", minWidth: 140 }}>
+                              }} style={{ flexShrink: 0, background: allIn ? "#1a1200" : "#13111e", border: allIn ? "1.5px solid #f59e0b" : "0.5px solid #1e1a2e", borderRadius: 10, padding: "8px 12px", cursor: "pointer", textAlign: "left", minWidth: 140 }}>
                                 <p style={{ margin: "0 0 3px", fontSize: 16 }}>{b.emoji}</p>
                                 <p style={{ margin: "0 0 2px", fontSize: 11, fontWeight: 700, color: allIn ? "#f59e0b" : "#e0dff0" }}>{b.name}</p>
                                 <p style={{ margin: 0, fontSize: 9, color: "#4a4958", lineHeight: 1.3 }}>{b.desc}</p>
@@ -2639,7 +2691,7 @@ export default function App() {
                                   const inSlip = opt && (slipMode === "acca" ? betslip.some(p => p.key === opt.key + "_" + m.id) : selectedMarket?.key === opt.key);
                                   return (
                                     <button key={i} onClick={opt ? e => { e.stopPropagation(); handleAddToSlip(opt, m.id, m.home + " vs " + m.away, "Match result"); } : e => e.stopPropagation()}
-                                      style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "0.5px solid #2d2250" : "0.5px solid #1e1530", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#130f1e", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
+                                      style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "0.5px solid #2d2250" : "none", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#0d0b18", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
                                       <p style={{ margin: 0, fontSize: 9, color: inSlip ? "#f59e0b" : "#5a4a7a", fontWeight: 700 }}>{["H","D","A"][i]}</p>
                                       <p style={{ margin: "3px 0 0", fontSize: 13, fontWeight: 800, color: inSlip ? "#f59e0b" : opt ? "#e8e0ff" : "#2d2450" }}>
                                         {cardOdds === undefined ? "·" : opt?.odds ?? "—"}
@@ -2713,7 +2765,7 @@ export default function App() {
                                     const inSlip = opt && (slipMode === "acca" ? betslip.some(p => p.key === opt.key + "_" + m.id) : selectedMarket?.key === opt.key);
                                     return (
                                       <button key={i} onClick={opt ? e => { e.stopPropagation(); handleAddToSlip(opt, m.id, m.home + " vs " + m.away, "Match result"); } : e => e.stopPropagation()}
-                                        style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "0.5px solid #2d2250" : "0.5px solid #1e1530", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#130f1e", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
+                                        style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "0.5px solid #2d2250" : "none", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#0d0b18", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
                                         <p style={{ margin: 0, fontSize: 9, color: inSlip ? "#f59e0b" : "#5a4a7a", fontWeight: 700 }}>{["H","D","A"][i]}</p>
                                         <p style={{ margin: "3px 0 0", fontSize: 13, fontWeight: 800, color: inSlip ? "#f59e0b" : opt ? "#e8e0ff" : "#2d2450" }}>
                                           {cardOdds === undefined ? "·" : opt?.odds ?? "—"}
@@ -2794,13 +2846,13 @@ export default function App() {
                               const inSlip = betslip.some(p => p.key === opt.key + "_" + match.id) || selectedMarket?.key === opt.key;
                               const diff   = getDifficulty(opt.label);
                               const val    = getValueLabel(opt.odds);
-                              const pts    = opt.odds ? calcPointsWinCapped(opt.odds, conf, diff.key) : null;
+                              const pts    = opt.odds ? calcPointsWin(opt.odds, conf, streakCount + 1, dailyStreak) : null;
                               return (
                                 <div key={oi} style={{ position: "relative" }}>
                                   <button
                                     onClick={() => opt.odds ? handleAddToSlip(opt, match.id, match.home + " vs " + match.away, group.category) : null}
                                     disabled={!opt.odds}
-                                    style={{ width: "100%", padding: "12px 6px 8px", borderRadius: 10, border: inSlip ? "2px solid #f59e0b" : !opt.odds ? "0.5px solid #1a1a20" : "0.5px solid #1e1e2a", background: inSlip ? "#1a1200" : !opt.odds ? "#0c0c10" : "#111118", cursor: opt.odds ? "pointer" : "not-allowed", textAlign: "center", transition: "all .1s", opacity: opt.odds ? 1 : 0.5 }}>
+                                    style={{ width: "100%", padding: "12px 6px 8px", borderRadius: 10, border: inSlip ? "2px solid #f59e0b" : !opt.odds ? "0.5px solid #1a1a20" : "0.5px solid #1e1e2a", background: inSlip ? "#1a1200" : !opt.odds ? "#0d0b18" : "#13111e", cursor: opt.odds ? "pointer" : "not-allowed", textAlign: "center", transition: "all .1s", opacity: opt.odds ? 1 : 0.5 }}>
                                     <p style={{ margin: "0 0 4px", fontSize: 10, color: inSlip ? "#f59e0b" : !opt.odds ? "#2a2a3a" : "#5a5a70", fontWeight: 700, textTransform: "uppercase" }}>{opt.label.replace(" win","").replace("Win","")}</p>
                                     {opt.odds
                                       ? <p style={{ margin: 0, fontSize: 22, fontWeight: 900, color: inSlip ? "#f59e0b" : "#e0dff0", lineHeight: 1 }}>{opt.odds}</p>
@@ -2821,13 +2873,13 @@ export default function App() {
                               const inSlip = betslip.some(p => p.key === opt.key + "_" + match.id) || selectedMarket?.key === opt.key;
                               const diff   = getDifficulty(opt.label);
                               const val    = getValueLabel(opt.odds);
-                              const pts    = opt.odds ? calcPointsWinCapped(opt.odds, conf, diff.key) : null;
+                              const pts    = opt.odds ? calcPointsWin(opt.odds, conf, streakCount + 1, dailyStreak) : null;
                               return (
                                 <div key={oi} style={{ display: "flex", gap: 0, opacity: opt.odds ? 1 : 0.45 }}>
                                   <button
                                     onClick={() => opt.odds ? handleAddToSlip(opt, match.id, match.home + " vs " + match.away, group.category) : null}
                                     disabled={!opt.odds}
-                                    style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderRadius: opt.odds ? "8px 0 0 8px" : "8px", border: inSlip ? "1.5px solid #f59e0b" : "0.5px solid #1e1e2a", borderRight: opt.odds ? "none" : undefined, background: inSlip ? "#1a1200" : !opt.odds ? "#0c0c10" : "#111118", cursor: opt.odds ? "pointer" : "not-allowed" }}>
+                                    style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderRadius: opt.odds ? "8px 0 0 8px" : "8px", border: inSlip ? "1.5px solid #f59e0b" : "0.5px solid #1e1e2a", borderRight: opt.odds ? "none" : undefined, background: inSlip ? "#1a1200" : !opt.odds ? "#0d0b18" : "#13111e", cursor: opt.odds ? "pointer" : "not-allowed" }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                       <span style={{ fontSize: 13, fontWeight: inSlip ? 700 : 400, color: inSlip ? "#f0eff8" : !opt.odds ? "#2a2a3a" : "#b0b0c4" }}>{opt.label}</span>
                                       {pts && !inSlip && opt.odds && <span style={{ fontSize: 10, color: "#22c55e80" }}>+{pts}</span>}
@@ -2835,7 +2887,7 @@ export default function App() {
                                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                       {val && !inSlip && opt.odds && <span style={{ fontSize: 9, color: val.color, fontWeight: 600 }}>{val.label}</span>}
                                       {inSlip && <span style={{ fontSize: 9, color: "#f59e0b", fontWeight: 800 }}>✓</span>}
-                                      <div style={{ background: inSlip ? "#f59e0b" : !opt.odds ? "#0e0e14" : "#1e1e2a", borderRadius: 5, padding: "4px 11px", minWidth: 44, textAlign: "center" }}>
+                                      <div style={{ background: inSlip ? "#f59e0b" : !opt.odds ? "#0d0b18" : "#1c1a2e", borderRadius: 5, padding: "4px 11px", minWidth: 44, textAlign: "center" }}>
                                         {opt.odds
                                           ? <span style={{ fontSize: 14, fontWeight: 900, color: inSlip ? "#000" : "#e0dff0" }}>{opt.odds}</span>
                                           : <span style={{ fontSize: 10, color: "#2a2a3a", fontWeight: 600 }}>N/A</span>
@@ -2843,7 +2895,7 @@ export default function App() {
                                       </div>
                                     </div>
                                   </button>
-                                  {opt.odds && <button onClick={() => setFormulaModal({ opt, diff })} style={{ padding: "0 10px", borderRadius: "0 8px 8px 0", border: inSlip ? "1.5px solid #f59e0b" : "0.5px solid #1e1e2a", borderLeft: "0.5px solid #2a2a3a", background: inSlip ? "#1a1200" : "#0e0e14", cursor: "pointer", color: "#3a3a50", fontSize: 13 }}>ⓘ</button>}
+                                  {opt.odds && <button onClick={() => setFormulaModal({ opt, diff })} style={{ padding: "0 10px", borderRadius: "0 8px 8px 0", border: inSlip ? "1.5px solid #f59e0b" : "0.5px solid #1e1e2a", borderLeft: "0.5px solid #2a2a3a", background: inSlip ? "#1a1200" : "#13111e", cursor: "pointer", color: "#3a3a50", fontSize: 13 }}>ⓘ</button>}
                                 </div>
                               );
                             })}
@@ -2859,16 +2911,14 @@ export default function App() {
 
           {/* ── Prediction Selection Panel ── */}
           {(selectedMarket || betslip.length > 0) && (() => {
-            const isAcca       = betslip.length > 1; // single pick = single bet, 2+ = accumulator
+            const isAcca       = betslip.length > 1;
             const combinedOdds = isAcca ? parseFloat(betslip.reduce((a,p) => a*(p.odds||2),1).toFixed(2)) : (selectedMarket?.odds || 2);
-            const accaBase     = Math.log2(combinedOdds + 1) / Math.log2(3);
-            const accaConf     = 0.6 + (conf/100 * 0.4);
-            const accaWin      = Math.min(Math.round(50 * accaBase * accaConf * 1.5 * streakMult), 400);
-            const accaLoss     = Math.round(3 + (conf/100) * 22); // scales with confidence: 10%→5pts, 90%→23pts
+            const accaWin      = calcPointsWin(combinedOdds, conf, streakCount + 1, dailyStreak);
+            const accaLoss     = calcPointsLoss(combinedOdds, conf);
             const totalLegs    = betslip.length;
 
             return (
-              <div style={{ flexShrink: 0, maxHeight: "55%", display: "flex", flexDirection: "column", background: "#0c0c10", borderTop: "1px solid #2a2232" }}>
+              <div style={{ flexShrink: 0, maxHeight: "55%", display: "flex", flexDirection: "column", background: "#0d0b18", borderTop: "1px solid #2a2232" }}>
 
                 {/* Collapsed tab — always visible */}
                 <button onClick={() => setSlipOpen(o => !o)} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", borderBottom: slipOpen ? "0.5px solid #1e1e28" : "none" }}>

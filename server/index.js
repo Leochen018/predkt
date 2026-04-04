@@ -19,30 +19,31 @@ const apiFootballHeaders = () => ({
 });
 
 // ─── Scoring helpers (mirrored from lib/scoring.js) ───────────────
-const BASE      = 4;
-const TIER_CAPS = { easy: 2.0, medium: 3.5, hard: 5.0, extreme: 8.0 };
+// WIN  = round(4 × odds × (conf/100) × dailyBonus × streakMult)
+// LOSS = round(4 × odds × (conf/100) × 0.5)
+const BASE = 4;
 
-function confWinScale(conf)  { const c = Math.min(Math.max(parseInt(conf)||50, 10), 90)/100; return 0.6 + c*0.4;  }
-function confLossScale(conf) { const c = Math.min(Math.max(parseInt(conf)||50, 10), 90)/100; return 0.1 + c*0.25; }
-
-function calcPointsWin(odds, confidence, diffMult, diffKey) {
-  const d   = parseFloat(diffMult) || 1.0;
-  const raw = Math.round(BASE * d * confWinScale(confidence));
-  const cap = Math.round(BASE * d * (TIER_CAPS[diffKey] || 2.0));
-  return Math.min(raw, cap);
+function getStreakMultiplier(winStreak) {
+  const s = Math.max(0, parseInt(winStreak) || 0);
+  return Math.min(1.0 + s * 0.1, 2.0);
 }
 
-function calcPointsLoss(confidence, diffMult, diffKey) {
-  const d   = parseFloat(diffMult) || 1.0;
-  const cap = diffKey === "extreme" ? 8 : 99;
-  return Math.min(Math.round(BASE * d * confLossScale(confidence)), cap);
+function getDailyBonus(dailyStreak) {
+  return (parseInt(dailyStreak) || 0) >= 2 ? 1.2 : 1.0;
 }
 
-function getStreakMultiplier(streak) {
-  const s = parseInt(streak) || 0;
-  if (s >= 5) return 2.0;
-  if (s >= 3) return 1.5;
-  return 1.0;
+function calcPointsWin(odds, confidence, winStreak, dailyStreak) {
+  const o  = parseFloat(odds) || 1.0;
+  const c  = Math.min(Math.max(parseInt(confidence) || 50, 0), 100) / 100;
+  const sm = getStreakMultiplier(winStreak);
+  const db = getDailyBonus(dailyStreak);
+  return Math.max(1, Math.round(BASE * o * c * db * sm));
+}
+
+function calcPointsLoss(odds, confidence) {
+  const o = parseFloat(odds) || 1.0;
+  const c = Math.min(Math.max(parseInt(confidence) || 50, 0), 100) / 100;
+  return Math.max(1, Math.round(BASE * o * c * 0.5));
 }
 
 function updateDailyStreak(profile) {
@@ -112,18 +113,16 @@ app.post("/api/resolve", async (req, res) => {
 
   const currentStreak = parseInt(profile.current_streak) || 0;
   const bestStreak    = parseInt(profile.best_streak)    || 0;
-  const diffMult      = parseFloat(pick.difficulty_multiplier) || 1.0;
 
-  let newStreak   = 0, multiplier = 1.0, basePoints = 0, finalPoints = 0;
+  let newStreak = 0, finalPoints = 0;
   if (result === "correct") {
     newStreak   = currentStreak + 1;
-    multiplier  = getStreakMultiplier(newStreak);
-    basePoints  = calcPointsWin(pick.odds, pick.confidence, diffMult, pick.difficulty);
-    finalPoints = Math.round(basePoints * multiplier);
+    finalPoints = calcPointsWin(pick.odds, pick.confidence, newStreak, profile.daily_streak);
   } else {
-    basePoints  = calcPointsLoss(pick.confidence, diffMult, pick.difficulty);
-    finalPoints = -basePoints;
+    finalPoints = -calcPointsLoss(pick.odds, pick.confidence);
   }
+  const multiplier  = getStreakMultiplier(newStreak);
+  const basePoints  = finalPoints > 0 ? finalPoints : Math.abs(finalPoints);
 
   const newBest         = Math.max(bestStreak, newStreak);
   const newWeeklyPoints = (parseInt(profile.weekly_points) || 0) + finalPoints;
@@ -196,18 +195,16 @@ app.post("/api/settle", async (req, res) => {
 
     const profile       = profileCache[pick.user_id];
     const currentStreak = parseInt(profile?.current_streak) || 0;
-    const diffMult      = parseFloat(pick.difficulty_multiplier) || 1.0;
 
-    let newStreak = 0, multiplier = 1.0, basePoints = 0, finalPoints = 0;
+    let newStreak = 0, finalPoints = 0;
     if (result === "correct") {
       newStreak   = currentStreak + 1;
-      multiplier  = getStreakMultiplier(newStreak);
-      basePoints  = calcPointsWin(pick.odds, pick.confidence, diffMult, pick.difficulty);
-      finalPoints = Math.round(basePoints * multiplier);
+      finalPoints = calcPointsWin(pick.odds, pick.confidence, newStreak, profile?.daily_streak);
     } else {
-      basePoints  = calcPointsLoss(pick.confidence, diffMult, pick.difficulty);
-      finalPoints = -basePoints;
+      finalPoints = -calcPointsLoss(pick.odds, pick.confidence);
     }
+    const multiplier = getStreakMultiplier(newStreak);
+    const basePoints = Math.abs(finalPoints);
 
     const newBest  = Math.max(parseInt(profile?.best_streak) || 0, newStreak);
     const dailyUp  = updateDailyStreak(profile);
