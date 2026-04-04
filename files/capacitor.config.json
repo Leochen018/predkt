@@ -1,0 +1,10 @@
+{
+  "appId": "com.leochen.predkt",
+  "appName": "predkt",
+  "webDir": "out",
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
