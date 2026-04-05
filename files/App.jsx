@@ -49,7 +49,7 @@ function findLiveMatch(liveMatches, home, away, fixtureId) {
 export default function App() {
   // Auth
   const [user,          setUser]          = useState(null);
-  const [authScreen,    setAuthScreen]    = useState("welcome"); // "welcome"|"guest"|"login"|"signup"|"verify"|"upgrade"
+  const [authScreen,    setAuthScreen]    = useState("welcome"); // "welcome"|"guest"|"login"|"signup"|"verify"|"verify-email-sent"|"email-verified"|"upgrade"
   const [email,         setEmail]         = useState("");
   const [password,      setPassword]      = useState("");
   const [guestName,     setGuestName]     = useState("");
@@ -77,6 +77,7 @@ export default function App() {
   const [oddsLive,       setOddsLive]       = useState(false);
   const [betslip,        setBetslip]        = useState([]);  // array of picks for accumulator
   const [slipOpen,       setSlipOpen]       = useState(false);
+  const [slipExpanded,   setSlipExpanded]   = useState(false);
   const [slipError,      setSlipError]      = useState("");
   const [slipMode,       setSlipMode]       = useState("single"); // "single" | "acca"
   const [notifyOnPick,   setNotifyOnPick]   = useState(false);
@@ -171,6 +172,7 @@ export default function App() {
   const searchTimerRef = useRef(null);
   const lbScrollRef    = useRef(null);  // ref for leaderboard scroll container
   const lbRowRefs      = useRef({});    // ref map: userId → row element
+  const slipTouchY     = useRef(null);  // touch start Y for swipe gesture on slip
 
   // ── Memoised derivations — only recompute when their inputs change ──
 
@@ -251,6 +253,45 @@ export default function App() {
       setUser(session?.user ?? null);
     });
     return () => subscription.unsubscribe();
+  }, []);
+
+  // ── Handle email verification callback ──────────────────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    const userId = params.get("userId");
+
+    if (token && userId && authScreen !== "verifying-email") {
+      (async () => {
+        try {
+          setAuthLoading(true);
+          const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/verify-email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId, token }),
+          });
+          const data = await res.json();
+          if (data.error) {
+            setAuthError(data.error);
+          } else {
+            // Success! Show success message and redirect to login
+            setAuthError("");
+            setAuthScreen("email-verified");
+            // Clear URL params
+            window.history.replaceState({}, document.title, window.location.pathname);
+            // Auto-redirect to login after 2 seconds
+            setTimeout(() => {
+              setAuthScreen("login");
+              setEmail("");
+              setPassword("");
+            }, 2000);
+          }
+        } catch (err) {
+          setAuthError("Failed to verify email. Please try again.");
+        }
+        setAuthLoading(false);
+      })();
+    }
   }, []);
 
   useEffect(() => {
@@ -685,6 +726,7 @@ export default function App() {
 
   async function handleCreateLeague() {
     if (profile?.is_anonymous) { requireAccount("league"); return; }
+    if (!profile?.email_verified) { setLeagueMsg({ text: "Please verify your email first. Check your inbox for a verification link.", ok: false }); return; }
     if (!createName.trim()) { setLeagueMsg({ text: "Enter a league name", ok: false }); return; }
     setLeagueActLoading(true); setLeagueMsg({ text: "", ok: true });
     try {
@@ -718,6 +760,7 @@ export default function App() {
 
   async function handleJoinLeague() {
     if (profile?.is_anonymous) { requireAccount("league"); return; }
+    if (!profile?.email_verified) { setLeagueMsg({ text: "Please verify your email first. Check your inbox for a verification link.", ok: false }); return; }
     if (!joinCode.trim()) { setLeagueMsg({ text: "Enter an invite code", ok: false }); return; }
     setLeagueActLoading(true); setLeagueMsg({ text: "", ok: true });
     try {
@@ -816,7 +859,7 @@ export default function App() {
     if (password.length < 6) { setAuthError("Password must be at least 6 characters"); return; }
     setAuthLoading(true); setAuthError("");
     try {
-      // Link email+password to existing anonymous account server-side (no confirmation email)
+      // Link email+password to existing anonymous account and send verification email
       const res  = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/upgrade`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user.id, email, password }),
@@ -824,12 +867,14 @@ export default function App() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      await loadProfile();
+      // Show verification email screen
+      setAuthLoading(false);
+      setAuthScreen("verify-email-sent");
       setUpgradePrompt(null);
     } catch (err) {
       setAuthError(err.message || "Could not link account. Try again.");
+      setAuthLoading(false);
     }
-    setAuthLoading(false);
   }
 
   function requireAccount(reason) {
@@ -864,7 +909,7 @@ export default function App() {
       return;
     }
 
-    // Create account server-side with email pre-confirmed (no confirmation email)
+    // Create account server-side and send verification email
     const signupRes = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/signup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, username }),
@@ -872,10 +917,9 @@ export default function App() {
     const signupData = await signupRes.json();
     if (signupData.error) { setAuthError(signupData.error); setAuthLoading(false); return; }
 
-    // Sign in immediately — no email confirmation required
-    const { error: loginError } = await supabase.auth.signInWithPassword({ email, password });
-    if (loginError) { setAuthError(loginError.message); setAuthLoading(false); return; }
+    // Show verification email screen instead of signing in
     setAuthLoading(false);
+    setAuthScreen("verify-email-sent");
   }
 
   async function handleLogin() {
@@ -909,6 +953,8 @@ export default function App() {
     if (!match || !selectedMarket) return;
     setLoading(true); setError("");
     if (myPicks.length >= 5) { setError("Daily limit reached — 5 predictions per day maximum."); setLoading(false); return; }
+    const matchStr = match.home + " vs " + match.away;
+    if (myPicks.some(p => p.match === matchStr)) { setError("You've already predicted this match today."); setLoading(false); return; }
     const diff      = getDifficulty(selectedMarket.label);
     const finalWin  = calcPointsWin(selectedMarket.odds, conf, streakCount + 1, dailyStreak);
     const finalLoss = calcPointsLoss(selectedMarket.odds, conf);
@@ -1041,6 +1087,9 @@ export default function App() {
     if (!betslip.length) return;
     setLoading(true); setError("");
     if (myPicks.length >= 5) { setError("Daily limit reached — 5 predictions per day maximum."); setLoading(false); return; }
+    const accaMatchLabels = betslip.map(p => p.matchLabel);
+    const dupMatch = accaMatchLabels.find(ml => myPicks.some(p => p.match === ml || p.match?.includes(ml)));
+    if (dupMatch) { setError(`You've already predicted ${dupMatch} today.`); setLoading(false); return; }
     const combinedOdds = parseFloat(betslip.reduce((acc, p) => acc * (p.odds || 2.0), 1).toFixed(2));
     const accaPoints   = calcPointsWin(combinedOdds, conf, streakCount + 1, dailyStreak);
     const accaLoss     = calcPointsLoss(combinedOdds, conf);
@@ -1206,6 +1255,38 @@ export default function App() {
               <button onClick={handleSignUp} disabled={authLoading} style={{ width: "100%", padding: "11px", background: "none", border: "none", color: "#4a4958", fontSize: 12, cursor: "pointer" }}>
                 {authLoading ? "Resending..." : "Resend email"}
               </button>
+            </div>
+          )}
+
+          {/* ── Email verification sent (after signup/upgrade) ── */}
+          {authScreen === "verify-email-sent" && (
+            <div style={{ padding: "0 28px", width: "100%", textAlign: "center" }}>
+              <div style={{ fontSize: 52, marginBottom: 16 }}>✉️</div>
+              <h2 style={{ margin: "0 0 8px", fontSize: 22, fontWeight: 800, color: "#f0eff8" }}>Verify your email</h2>
+              <p style={{ margin: "0 0 8px", fontSize: 14, color: "#8b8a99", lineHeight: 1.6 }}>
+                We sent a verification link to <span style={{ color: "#6c63ff", fontWeight: 600 }}>{email}</span>.
+              </p>
+              <p style={{ margin: "0 0 32px", fontSize: 13, color: "#4a4958", lineHeight: 1.5 }}>
+                Click the link in the email to verify your account. After that, you can access the leaderboard and create leagues.
+              </p>
+              <button onClick={() => { setAuthScreen("login"); setAuthError(""); }} style={{ width: "100%", padding: "14px", borderRadius: 12, border: "none", background: "#6c63ff", color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer", marginBottom: 10 }}>
+                Go to log in
+              </button>
+              <button onClick={() => setAuthScreen("welcome")} style={{ width: "100%", padding: "11px", background: "none", border: "none", color: "#4a4958", fontSize: 12, cursor: "pointer" }}>
+                Back to start
+              </button>
+            </div>
+          )}
+
+          {/* ── Email verified success ── */}
+          {authScreen === "email-verified" && (
+            <div style={{ padding: "0 28px", width: "100%", textAlign: "center" }}>
+              <div style={{ fontSize: 52, marginBottom: 16 }}>✅</div>
+              <h2 style={{ margin: "0 0 8px", fontSize: 22, fontWeight: 800, color: "#22c55e" }}>Email verified!</h2>
+              <p style={{ margin: "0 0 32px", fontSize: 13, color: "#4a4958", lineHeight: 1.5 }}>
+                Your email has been successfully verified. You now have access to the leaderboard and can create leagues.
+              </p>
+              <p style={{ margin: "0 0 20px", fontSize: 12, color: "#3a3a50" }}>Redirecting to login...</p>
             </div>
           )}
 
@@ -1938,6 +2019,14 @@ export default function App() {
                 <button onClick={() => { setEmail(""); setPassword(""); setAuthScreen("upgrade"); }} style={{ background: "#f59e0b", border: "none", color: "#000", fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer", flexShrink: 0 }}>Save</button>
               </div>
             )}
+            {!profile?.is_anonymous && !profile?.email_verified && (
+              <div style={{ background: "#6c63ff12", border: "0.5px solid #6c63ff44", borderRadius: 10, padding: "10px 12px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <p style={{ margin: "0 0 2px", fontSize: 12, fontWeight: 700, color: "#6c63ff" }}>📧 Verify your email</p>
+                  <p style={{ margin: 0, fontSize: 11, color: "#4a4958" }}>Check your email to unlock full features</p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Scrollable rankings list */}
@@ -2001,33 +2090,13 @@ export default function App() {
             }
 
             return (
-              <button onClick={scrollToMe} style={{ flexShrink: 0, width: "100%", background: "linear-gradient(180deg, #131120 0%, #0e0d16 100%)", borderTop: "1px solid #6c63ff44", padding: "10px 16px 12px", cursor: "pointer", textAlign: "left", display: "block" }}>
-                <div style={{ width: 32, height: 4, borderRadius: 2, background: "#6c63ff44", margin: "0 auto 10px" }} />
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 32, textAlign: "center", flexShrink: 0 }}>
-                    {myRank && myRank <= 3
-                      ? <span style={{ fontSize: 20 }}>{["🥇","🥈","🥉"][myRank - 1]}</span>
-                      : <span style={{ fontSize: 15, fontWeight: 800, color: "#8a83ff" }}>#{myRank ?? "—"}</span>
-                    }
-                  </div>
-                  <div style={{ width: 40, height: 40, borderRadius: "50%", background: "linear-gradient(135deg,#6c63ff,#8a83ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 800, color: "#fff", flexShrink: 0 }}>
-                    {profile.username?.[0]?.toUpperCase() ?? "?"}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#c4c0ff" }}>{profile.username}</p>
-                      <span style={{ fontSize: 10, color: "#fff", fontWeight: 700, background: "#6c63ff", padding: "1px 6px", borderRadius: 99 }}>you</span>
-                    </div>
-                    <div style={{ display: "flex", gap: 10, marginTop: 2 }}>
-                      {myEntry?.accuracy != null && <span style={{ fontSize: 11, color: "#4a4958" }}>{myEntry.accuracy}% accuracy</span>}
-                      {(profile.current_streak || 0) >= 1 && <span style={{ fontSize: 11, color: profile.current_streak >= 5 ? "#ef4444" : profile.current_streak >= 3 ? "#f59e0b" : "#22c55e" }}>{profile.current_streak >= 5 ? "🔥" : "⚡"} {profile.current_streak} streak</span>}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <p style={{ margin: 0, fontSize: 22, fontWeight: 800, color: "#8a83ff" }}>{myPts ?? 0}</p>
-                    <p style={{ margin: 0, fontSize: 10, color: "#6c63ff" }}>tap to find position ↑</p>
-                  </div>
+              <button onClick={scrollToMe} style={{ flexShrink: 0, width: "100%", background: "#0e0d16", borderTop: "1px solid #6c63ff44", padding: "7px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 28, height: 28, borderRadius: "50%", background: "linear-gradient(135deg,#6c63ff,#8a83ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: "#fff", flexShrink: 0 }}>
+                  {profile.username?.[0]?.toUpperCase() ?? "?"}
                 </div>
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: "#c4c0ff", textAlign: "left" }}>{profile.username}</span>
+                <span style={{ fontSize: 10, color: "#fff", fontWeight: 700, background: "#6c63ff", padding: "1px 6px", borderRadius: 99, flexShrink: 0 }}>you</span>
+                <span style={{ fontSize: 15, fontWeight: 800, color: "#8a83ff", flexShrink: 0, marginLeft: 6 }}>{myPts ?? 0} pts</span>
               </button>
             );
           })()}
@@ -2296,6 +2365,14 @@ export default function App() {
             {leagueMsg.text && (
               <div style={{ background: leagueMsg.ok ? "#22c55e15" : "#ef444415", border: "0.5px solid " + (leagueMsg.ok ? "#22c55e44" : "#ef444444"), borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: leagueMsg.ok ? "#22c55e" : "#ef4444" }}>
                 {leagueMsg.text}
+              </div>
+            )}
+
+            {/* Email verification banner */}
+            {!profile?.is_anonymous && !profile?.email_verified && !leagueView && (
+              <div style={{ background: "#6c63ff12", border: "0.5px solid #6c63ff44", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+                <p style={{ margin: "0 0 6px", fontSize: 12, fontWeight: 700, color: "#6c63ff" }}>📧 Verify your email</p>
+                <p style={{ margin: 0, fontSize: 11, color: "#4a4958", lineHeight: 1.4 }}>Check your inbox for a verification link to unlock league creation and joining.</p>
               </div>
             )}
 
@@ -2691,7 +2768,7 @@ export default function App() {
                                   const inSlip = opt && (slipMode === "acca" ? betslip.some(p => p.key === opt.key + "_" + m.id) : selectedMarket?.key === opt.key);
                                   return (
                                     <button key={i} onClick={opt ? e => { e.stopPropagation(); handleAddToSlip(opt, m.id, m.home + " vs " + m.away, "Match result"); } : e => e.stopPropagation()}
-                                      style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "0.5px solid #2d2250" : "none", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#0d0b18", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
+                                      style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "1.5px solid #2d2250" : "1.5px solid transparent", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#0d0b18", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
                                       <p style={{ margin: 0, fontSize: 9, color: inSlip ? "#f59e0b" : "#5a4a7a", fontWeight: 700 }}>{["H","D","A"][i]}</p>
                                       <p style={{ margin: "3px 0 0", fontSize: 13, fontWeight: 800, color: inSlip ? "#f59e0b" : opt ? "#e8e0ff" : "#2d2450" }}>
                                         {cardOdds === undefined ? "·" : opt?.odds ?? "—"}
@@ -2765,7 +2842,7 @@ export default function App() {
                                     const inSlip = opt && (slipMode === "acca" ? betslip.some(p => p.key === opt.key + "_" + m.id) : selectedMarket?.key === opt.key);
                                     return (
                                       <button key={i} onClick={opt ? e => { e.stopPropagation(); handleAddToSlip(opt, m.id, m.home + " vs " + m.away, "Match result"); } : e => e.stopPropagation()}
-                                        style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "0.5px solid #2d2250" : "none", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#0d0b18", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
+                                        style={{ minWidth: 42, padding: "6px 4px", borderRadius: 8, border: inSlip ? "1.5px solid #f59e0b" : opt ? "1.5px solid #2d2250" : "1.5px solid transparent", background: inSlip ? "#f59e0b18" : opt ? "#1c1535" : "#0d0b18", cursor: opt ? "pointer" : "default", textAlign: "center" }}>
                                         <p style={{ margin: 0, fontSize: 9, color: inSlip ? "#f59e0b" : "#5a4a7a", fontWeight: 700 }}>{["H","D","A"][i]}</p>
                                         <p style={{ margin: "3px 0 0", fontSize: 13, fontWeight: 800, color: inSlip ? "#f59e0b" : opt ? "#e8e0ff" : "#2d2450" }}>
                                           {cardOdds === undefined ? "·" : opt?.odds ?? "—"}
@@ -2852,7 +2929,7 @@ export default function App() {
                                   <button
                                     onClick={() => opt.odds ? handleAddToSlip(opt, match.id, match.home + " vs " + match.away, group.category) : null}
                                     disabled={!opt.odds}
-                                    style={{ width: "100%", padding: "12px 6px 8px", borderRadius: 10, border: inSlip ? "2px solid #f59e0b" : !opt.odds ? "0.5px solid #1a1a20" : "0.5px solid #1e1e2a", background: inSlip ? "#1a1200" : !opt.odds ? "#0d0b18" : "#13111e", cursor: opt.odds ? "pointer" : "not-allowed", textAlign: "center", transition: "all .1s", opacity: opt.odds ? 1 : 0.5 }}>
+                                    style={{ width: "100%", padding: "12px 6px 8px", borderRadius: 10, border: inSlip ? "2px solid #f59e0b" : !opt.odds ? "2px solid #1a1a20" : "2px solid #1e1e2a", background: inSlip ? "#1a1200" : !opt.odds ? "#0d0b18" : "#13111e", cursor: opt.odds ? "pointer" : "not-allowed", textAlign: "center", transition: "background .1s, border-color .1s", opacity: opt.odds ? 1 : 0.5 }}>
                                     <p style={{ margin: "0 0 4px", fontSize: 10, color: inSlip ? "#f59e0b" : !opt.odds ? "#2a2a3a" : "#5a5a70", fontWeight: 700, textTransform: "uppercase" }}>{opt.label.replace(" win","").replace("Win","")}</p>
                                     {opt.odds
                                       ? <p style={{ margin: 0, fontSize: 22, fontWeight: 900, color: inSlip ? "#f59e0b" : "#e0dff0", lineHeight: 1 }}>{opt.odds}</p>
@@ -2879,7 +2956,7 @@ export default function App() {
                                   <button
                                     onClick={() => opt.odds ? handleAddToSlip(opt, match.id, match.home + " vs " + match.away, group.category) : null}
                                     disabled={!opt.odds}
-                                    style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderRadius: opt.odds ? "8px 0 0 8px" : "8px", border: inSlip ? "1.5px solid #f59e0b" : "0.5px solid #1e1e2a", borderRight: opt.odds ? "none" : undefined, background: inSlip ? "#1a1200" : !opt.odds ? "#0d0b18" : "#13111e", cursor: opt.odds ? "pointer" : "not-allowed" }}>
+                                    style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderRadius: opt.odds ? "8px 0 0 8px" : "8px", border: inSlip ? "1.5px solid #f59e0b" : "1.5px solid #1e1e2a", borderRight: opt.odds ? "none" : undefined, background: inSlip ? "#1a1200" : !opt.odds ? "#0d0b18" : "#13111e", cursor: opt.odds ? "pointer" : "not-allowed" }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                       <span style={{ fontSize: 13, fontWeight: inSlip ? 700 : 400, color: inSlip ? "#f0eff8" : !opt.odds ? "#2a2a3a" : "#b0b0c4" }}>{opt.label}</span>
                                       {pts && !inSlip && opt.odds && <span style={{ fontSize: 10, color: "#22c55e80" }}>+{pts}</span>}
@@ -2895,7 +2972,7 @@ export default function App() {
                                       </div>
                                     </div>
                                   </button>
-                                  {opt.odds && <button onClick={() => setFormulaModal({ opt, diff })} style={{ padding: "0 10px", borderRadius: "0 8px 8px 0", border: inSlip ? "1.5px solid #f59e0b" : "0.5px solid #1e1e2a", borderLeft: "0.5px solid #2a2a3a", background: inSlip ? "#1a1200" : "#13111e", cursor: "pointer", color: "#3a3a50", fontSize: 13 }}>ⓘ</button>}
+                                  {opt.odds && <button onClick={() => setFormulaModal({ opt, diff })} style={{ padding: "0 10px", borderRadius: "0 8px 8px 0", border: inSlip ? "1.5px solid #f59e0b" : "1.5px solid #1e1e2a", borderLeft: inSlip ? "1.5px solid #f59e0b40" : "1.5px solid #2a2a3a", background: inSlip ? "#1a1200" : "#13111e", cursor: "pointer", color: inSlip ? "#f59e0b80" : "#3a3a50", fontSize: 13 }}>ⓘ</button>}
                                 </div>
                               );
                             })}
@@ -2918,10 +2995,26 @@ export default function App() {
             const totalLegs    = betslip.length;
 
             return (
-              <div style={{ flexShrink: 0, maxHeight: "55%", display: "flex", flexDirection: "column", background: "#0d0b18", borderTop: "1px solid #2a2232" }}>
+              <div
+                onTouchStart={e => { slipTouchY.current = e.touches[0].clientY; }}
+                onTouchEnd={e => {
+                  if (slipTouchY.current === null) return;
+                  const dy = slipTouchY.current - e.changedTouches[0].clientY;
+                  slipTouchY.current = null;
+                  if (dy > 40) {
+                    // swipe up
+                    if (!slipOpen) { setSlipOpen(true); setSlipExpanded(false); }
+                    else if (!slipExpanded) setSlipExpanded(true);
+                  } else if (dy < -40) {
+                    // swipe down
+                    if (slipExpanded) setSlipExpanded(false);
+                    else setSlipOpen(false);
+                  }
+                }}
+                style={{ flexShrink: 0, maxHeight: slipExpanded ? "85%" : slipOpen ? "60%" : "none", display: "flex", flexDirection: "column", background: "#0d0b18", borderTop: "1px solid #2a2232", transition: "max-height 0.25s ease" }}>
 
                 {/* Collapsed tab — always visible */}
-                <button onClick={() => setSlipOpen(o => !o)} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", borderBottom: slipOpen ? "0.5px solid #1e1e28" : "none" }}>
+                <button onClick={() => { if (slipExpanded) { setSlipExpanded(false); } else { setSlipOpen(o => !o); } }} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", borderBottom: slipOpen ? "0.5px solid #1e1e28" : "none" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     {/* Slip icon with count badge */}
                     <div style={{ position: "relative" }}>
@@ -2945,7 +3038,7 @@ export default function App() {
                     <span style={{ fontSize: 12, fontWeight: 800, color: "#22c55e" }}>
                       +{isAcca ? accaWin : pointsToWin} pts
                     </span>
-                    <span style={{ fontSize: 10, color: "#4a4958", background: "#1e1e28", padding: "2px 6px", borderRadius: 4 }}>{slipOpen ? "▼" : "▲"}</span>
+                    <span style={{ fontSize: 10, color: "#4a4958", background: "#1e1e28", padding: "2px 6px", borderRadius: 4 }}>{slipExpanded ? "▼▼" : slipOpen ? "▼" : "▲"}</span>
                   </div>
                 </button>
 
