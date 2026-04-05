@@ -303,7 +303,7 @@ export default function App() {
     if (!user) return;
     const pollLive = async () => {
       try {
-        const res  = await fetchfetch("http://192.168.0.5:3001/api/live");
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/live`);
         const data = await res.json();
         if (data.liveMatches) setLiveMatches(data.liveMatches);
       } catch {}
