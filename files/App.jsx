@@ -1997,12 +1997,12 @@ export default function App() {
         <div style={{ ...s.screen, position: "relative" }}>
           {/* Fixed header */}
           <div style={s.header}>
-            <span style={s.logo}>Leaderboard</span>
+            <span style={{ ...s.logo, textTransform: "uppercase", fontSize: 12, letterSpacing: ".1em", fontWeight: 800 }}>Leaderboard</span>
             <button onClick={() => loadLeaderboard(lbTab)} style={{ background: "none", border: "none", color: "#6c63ff", fontSize: 12, cursor: "pointer" }}>Refresh</button>
           </div>
 
           {/* Fixed toggle + trial banner */}
-          <div style={{ padding: "10px 16px 0", flexShrink: 0 }}>
+          <div style={{ padding: "12px 16px 0", flexShrink: 0 }}>
             <div style={s.toggle}>
               {["weekly","alltime"].map(t => (
                 <button key={t} onClick={() => setLbTab(t)} style={{ ...s.toggleBtn, ...(lbTab===t ? s.toggleBtnOn : {}) }}>
@@ -2019,64 +2019,163 @@ export default function App() {
                 <button onClick={() => { setEmail(""); setPassword(""); setAuthScreen("upgrade"); }} style={{ background: "#f59e0b", border: "none", color: "#000", fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer", flexShrink: 0 }}>Save</button>
               </div>
             )}
-            {!profile?.is_anonymous && !profile?.email_verified && (
-              <div style={{ background: "#6c63ff12", border: "0.5px solid #6c63ff44", borderRadius: 10, padding: "10px 12px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <p style={{ margin: "0 0 2px", fontSize: 12, fontWeight: 700, color: "#6c63ff" }}>📧 Verify your email</p>
-                  <p style={{ margin: 0, fontSize: 11, color: "#4a4958" }}>Check your email to unlock full features</p>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Scrollable rankings list */}
-          <div ref={lbScrollRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "4px 16px 8px" }}>
-            {lbLoading && <p style={{ fontSize: 13, color: "#4a4958", padding: "8px 0" }}>Loading...</p>}
-            {!lbLoading && lbData.length === 0 && <p style={{ fontSize: 13, color: "#4a4958", padding: "8px 0" }}>No data yet — make some picks!</p>}
-            {!lbLoading && lbData.map((p, i) => {
-              const isMe   = p.id === user?.id;
-              const pts    = lbTab === "weekly" ? p.weekly_points : p.total_points;
-              const isTop3 = i < 3;
-              const medals = ["🥇","🥈","🥉"];
-              return (
-                <button
-                  key={p.id}
-                  ref={el => { lbRowRefs.current[p.id] = el; }}
-                  onClick={() => openProfile(p.id)}
-                  style={{ ...s.card, border: isMe ? "1.5px solid #6c63ff" : "0.5px solid #2a2a32", background: isMe ? "#1a1430" : "#1a1a1f", marginBottom: 8, width: "100%", cursor: "pointer", textAlign: "left" }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div style={{ width: 32, textAlign: "center", flexShrink: 0 }}>
-                      {isTop3 ? <span style={{ fontSize: 18 }}>{medals[i]}</span> : <span style={{ fontSize: 13, color: "#4a4958", fontWeight: 600 }}>{i+1}</span>}
-                    </div>
-                    <div style={{ ...s.avatar, width: 36, height: 36, fontSize: 13, background: isMe ? "linear-gradient(135deg,#6c63ff,#8a83ff)" : "#1e1e2a", border: "none", color: isMe ? "#fff" : "#8b8a99" }}>
-                      {p.username?.[0]?.toUpperCase() ?? "?"}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: isMe ? "#c4c0ff" : "#f0eff8" }}>{p.username ?? "Unknown"}</p>
-                        {isMe && <span style={{ fontSize: 10, color: "#fff", fontWeight: 700, background: "#6c63ff", padding: "1px 6px", borderRadius: 99 }}>you</span>}
-                        {p.current_streak >= 3 && <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 99, background: "#ef444420", color: "#ef4444" }}>{p.current_streak >= 5 ? "🔥" : "⚡"}{p.current_streak}</span>}
+          <div ref={lbScrollRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 16px 8px" }}>
+            {lbLoading && <p style={{ fontSize: 13, color: "#4a4958", padding: "24px 0" }}>Loading...</p>}
+            {!lbLoading && lbData.length === 0 && <p style={{ fontSize: 13, color: "#4a4958", padding: "24px 0" }}>No data yet — make some picks!</p>}
+
+            {!lbLoading && lbData.length > 0 && (
+              <>
+                {/* Hero section */}
+                <div style={{ padding: "20px 0 24px", textAlign: "center" }}>
+                  <div style={{ fontSize: 40, marginBottom: 8 }}>👑</div>
+                  <h2 style={{ margin: 0, fontSize: 24, fontWeight: 800, color: "#f0eff8", lineHeight: 1.2 }}>
+                    {lbTab === "weekly" ? "Weekly Top" : "All Time Top"} Predictors
+                  </h2>
+                </div>
+
+                {/* Top 3 Podium */}
+                {lbData.length >= 3 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr", gap: 12, alignItems: "flex-end", marginBottom: 28 }}>
+                    {/* 2nd Place */}
+                    <button
+                      onClick={() => openProfile(lbData[1].id)}
+                      style={{
+                        background: "#1a1a1f",
+                        border: "0.5px solid #2a2a32",
+                        borderRadius: 12,
+                        padding: 16,
+                        cursor: "pointer",
+                        textAlign: "center",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ fontSize: 24, fontWeight: 800, color: "#c0c0c0" }}>2</div>
+                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#c0c0c044", border: "2px solid #c0c0c0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, color: "#f0eff8" }}>
+                        {lbData[1].username?.[0]?.toUpperCase() ?? "?"}
                       </div>
-                      <div style={{ display: "flex", gap: 10, marginTop: 2 }}>
-                        <span style={{ fontSize: 11, color: "#4a4958" }}>{p.total} picks</span>
-                        {p.accuracy != null && <span style={{ fontSize: 11, color: "#4a4958" }}>{p.accuracy}% accuracy</span>}
+                      <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#f0eff8" }}>{lbData[1].username}</p>
+                      <p style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#f0eff8" }}>{lbTab === "weekly" ? lbData[1].weekly_points : lbData[1].total_points}</p>
+                      <p style={{ margin: 0, fontSize: 10, color: "#4a4958" }}>pts</p>
+                    </button>
+
+                    {/* 1st Place */}
+                    <button
+                      onClick={() => openProfile(lbData[0].id)}
+                      style={{
+                        background: "linear-gradient(135deg, #f59e0b22, #f59e0b11)",
+                        border: "1.5px solid #f59e0b66",
+                        borderRadius: 12,
+                        padding: 20,
+                        cursor: "pointer",
+                        textAlign: "center",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 10,
+                        transform: "translateY(-12px)",
+                      }}
+                    >
+                      <div style={{ fontSize: 32 }}>🏆</div>
+                      <div style={{ width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(135deg, #f59e0b, #f59e0b88)", border: "2px solid #f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 800, color: "#fff" }}>
+                        {lbData[0].username?.[0]?.toUpperCase() ?? "?"}
                       </div>
-                    </div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <p style={{ margin: 0, fontSize: 18, fontWeight: 700, color: isTop3 ? "#f59e0b" : isMe ? "#8a83ff" : "#f0eff8" }}>{pts ?? 0}</p>
-                      <p style={{ margin: 0, fontSize: 11, color: "#4a4958" }}>pts</p>
-                    </div>
+                      <p style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#f0eff8" }}>{lbData[0].username}</p>
+                      <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#f59e0b" }}>{lbTab === "weekly" ? lbData[0].weekly_points : lbData[0].total_points}</p>
+                      <p style={{ margin: 0, fontSize: 10, color: "#4a4958" }}>pts</p>
+                    </button>
+
+                    {/* 3rd Place */}
+                    <button
+                      onClick={() => openProfile(lbData[2].id)}
+                      style={{
+                        background: "#1a1a1f",
+                        border: "0.5px solid #2a2a32",
+                        borderRadius: 12,
+                        padding: 16,
+                        cursor: "pointer",
+                        textAlign: "center",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ fontSize: 24, fontWeight: 800, color: "#cd7f32" }}>3</div>
+                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#cd7f3244", border: "2px solid #cd7f32", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, color: "#f0eff8" }}>
+                        {lbData[2].username?.[0]?.toUpperCase() ?? "?"}
+                      </div>
+                      <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#f0eff8" }}>{lbData[2].username}</p>
+                      <p style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#f0eff8" }}>{lbTab === "weekly" ? lbData[2].weekly_points : lbData[2].total_points}</p>
+                      <p style={{ margin: 0, fontSize: 10, color: "#4a4958" }}>pts</p>
+                    </button>
                   </div>
-                </button>
-              );
-            })}
+                )}
+
+                {/* Divider */}
+                {lbData.length > 3 && (
+                  <div style={{ height: "1px", background: "#2a2a32", margin: "20px 0 16px" }} />
+                )}
+
+                {/* Remaining ranks (4+) */}
+                {lbData.slice(3).map((p, i) => {
+                  const actualIndex = i + 3;
+                  const isMe = p.id === user?.id;
+                  const pts = lbTab === "weekly" ? p.weekly_points : p.total_points;
+                  return (
+                    <button
+                      key={p.id}
+                      ref={el => { lbRowRefs.current[p.id] = el; }}
+                      onClick={() => openProfile(p.id)}
+                      style={{
+                        ...s.card,
+                        border: isMe ? "1.5px solid #6c63ff" : "0.5px solid #2a2a32",
+                        background: isMe ? "#1a1430" : "#1a1a1f",
+                        marginBottom: 10,
+                        width: "100%",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        padding: "14px 14px"
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#2a2a32", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <span style={{ fontSize: 13, color: "#8b8a99", fontWeight: 700 }}>{actualIndex + 1}</span>
+                        </div>
+                        <div style={{ ...s.avatar, width: 40, height: 40, fontSize: 14, background: isMe ? "linear-gradient(135deg,#6c63ff,#8a83ff)" : "#1e1e2a", border: "none", color: isMe ? "#fff" : "#8b8a99" }}>
+                          {p.username?.[0]?.toUpperCase() ?? "?"}
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: isMe ? "#c4c0ff" : "#f0eff8" }}>{p.username ?? "Unknown"}</p>
+                            {isMe && <span style={{ fontSize: 9, color: "#fff", fontWeight: 700, background: "#6c63ff", padding: "2px 6px", borderRadius: 99 }}>you</span>}
+                            {p.current_streak >= 3 && <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 99, background: "#ef444420", color: "#ef4444" }}>{p.current_streak >= 5 ? "🔥" : "⚡"}{p.current_streak}</span>}
+                          </div>
+                          <div style={{ display: "flex", gap: 10, marginTop: 3 }}>
+                            <span style={{ fontSize: 11, color: "#4a4958" }}>{p.total} picks</span>
+                            {p.accuracy != null && <span style={{ fontSize: 11, color: "#4a4958" }}>{p.accuracy}% accuracy</span>}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right", flexShrink: 0 }}>
+                          <p style={{ margin: 0, fontSize: 17, fontWeight: 800, color: isMe ? "#8a83ff" : "#f0eff8" }}>{pts ?? 0}</p>
+                          <p style={{ margin: 0, fontSize: 10, color: "#4a4958" }}>pts</p>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </div>
 
-          {/* Your card — pinned above BottomNav, taps scroll to your row then opens profile */}
+          {/* Your rank — pinned above BottomNav */}
           {user && profile && !profile.is_anonymous && (() => {
             const myEntry = lbData.find(p => p.id === user.id);
-            const myPts   = lbTab === "weekly" ? profile.weekly_points : profile.total_points;
             const myRank  = myEntry?.rank ?? null;
 
             function scrollToMe() {
@@ -2090,13 +2189,8 @@ export default function App() {
             }
 
             return (
-              <button onClick={scrollToMe} style={{ flexShrink: 0, width: "100%", background: "#0e0d16", borderTop: "1px solid #6c63ff44", padding: "7px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 28, height: 28, borderRadius: "50%", background: "linear-gradient(135deg,#6c63ff,#8a83ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: "#fff", flexShrink: 0 }}>
-                  {profile.username?.[0]?.toUpperCase() ?? "?"}
-                </div>
-                <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: "#c4c0ff", textAlign: "left" }}>{profile.username}</span>
-                <span style={{ fontSize: 10, color: "#fff", fontWeight: 700, background: "#6c63ff", padding: "1px 6px", borderRadius: 99, flexShrink: 0 }}>you</span>
-                <span style={{ fontSize: 15, fontWeight: 800, color: "#8a83ff", flexShrink: 0, marginLeft: 6 }}>{myPts ?? 0} pts</span>
+              <button onClick={scrollToMe} style={{ flexShrink: 0, width: "100%", background: "none", border: "none", padding: "12px 16px", textAlign: "center", cursor: "pointer" }}>
+                <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f0eff8" }}>My Rank: <span style={{ color: "#8a83ff", fontWeight: 800 }}>{myRank ?? "—"}</span></p>
               </button>
             );
           })()}
