@@ -1,6 +1,8 @@
 require("dotenv").config();
 const express = require("express");
 const cors    = require("cors");
+const crypto  = require("crypto");
+const { Resend } = require("resend");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -11,6 +13,10 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
+
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
 
 const API_FOOTBALL_BASE    = "https://v3.football.api-sports.io";
 const apiFootballHeaders = () => ({
@@ -343,11 +349,11 @@ app.post("/api/signup", async (req, res) => {
   const alreadyExists = (existing?.users || []).find(u => u.email?.toLowerCase() === email.toLowerCase());
   if (alreadyExists) return res.status(400).json({ error: "An account with that email already exists" });
 
-  // Create user with email pre-confirmed — no confirmation email sent
+  // Create user WITHOUT pre-confirming email — will send verification email instead
   const { data, error } = await supabase.auth.admin.createUser({
     email,
     password,
-    email_confirm: true,
+    email_confirm: false, // Changed: don't auto-confirm, send verification instead
   });
   if (error) return res.status(400).json({ error: error.message });
 
@@ -359,15 +365,32 @@ app.post("/api/signup", async (req, res) => {
     username:     username.trim(),
     display_name: username.trim(),
     is_anonymous: false,
+    email_verified: false,
   }, { onConflict: "id" });
 
   if (profileError) return res.status(500).json({ error: profileError.message });
+
+  // Generate and send verification email
+  const token = generateVerificationToken();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+  await supabase
+    .from("profiles")
+    .update({
+      verification_token: token,
+      token_expires_at: expiresAt
+    })
+    .eq("id", userId);
+
+  // Send verification email
+  const verificationUrl = `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/verify?token=${token}&userId=${userId}`;
+  await sendVerificationEmail(email, verificationUrl);
 
   res.json({ userId });
 });
 
 // ─── POST /api/upgrade ────────────────────────────────────────────
-// Links email+password to an existing anonymous account (no confirmation email)
+// Links email+password to an existing anonymous account, sends verification email
 app.post("/api/upgrade", async (req, res) => {
   const { userId, email, password } = req.body;
   if (!userId || !email || !password) return res.status(400).json({ error: "Missing fields" });
@@ -377,18 +400,174 @@ app.post("/api/upgrade", async (req, res) => {
   const taken = (existing?.users || []).find(u => u.email?.toLowerCase() === email.toLowerCase() && u.id !== userId);
   if (taken) return res.status(400).json({ error: "An account with that email already exists" });
 
-  // Update the anonymous user's email+password with email pre-confirmed
+  // Update the anonymous user's email+password WITHOUT pre-confirming
   const { error } = await supabase.auth.admin.updateUserById(userId, {
     email,
     password,
-    email_confirm: true,
+    email_confirm: false, // Changed: don't auto-confirm, send verification instead
   });
   if (error) return res.status(400).json({ error: error.message });
 
-  // Mark profile as no longer anonymous
-  await supabase.from("profiles").update({ is_anonymous: false }).eq("id", userId);
+  // Mark profile as no longer anonymous and set email_verified to false
+  await supabase.from("profiles").update({ is_anonymous: false, email_verified: false }).eq("id", userId);
+
+  // Generate and send verification email
+  const token = generateVerificationToken();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+  await supabase
+    .from("profiles")
+    .update({
+      verification_token: token,
+      token_expires_at: expiresAt
+    })
+    .eq("id", userId);
+
+  // Send verification email
+  const verificationUrl = `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/verify?token=${token}&userId=${userId}`;
+  await sendVerificationEmail(email, verificationUrl);
 
   res.json({ ok: true });
+});
+
+// ─── Helper: Generate email verification token ─────────────────────
+function generateVerificationToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+// ─── Helper: Send verification email via Resend ──────────────────────
+async function sendVerificationEmail(email, verificationUrl) {
+  if (resend) {
+    try {
+      await resend.emails.send({
+        from: "noreply@predkt.app",
+        to: email,
+        subject: "Verify your email - Predkt",
+        html: `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+            <div style="background: linear-gradient(135deg, #6c63ff, #a855f7); padding: 20px; text-align: center; border-radius: 12px 12px 0 0;">
+              <h1 style="color: white; margin: 0; font-size: 28px;">🎯 Predkt</h1>
+            </div>
+
+            <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 12px 12px;">
+              <h2 style="color: #1a1a1f; margin-top: 0;">Verify your email</h2>
+
+              <p style="color: #4a4958; line-height: 1.6; font-size: 14px;">
+                Welcome to Predkt! To get started and access all features, please verify your email by clicking the button below.
+              </p>
+
+              <div style="margin: 30px 0; text-align: center;">
+                <a href="${verificationUrl}" style="display: inline-block; padding: 14px 40px; background: linear-gradient(135deg, #6c63ff, #8a83ff); color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
+                  Verify Email
+                </a>
+              </div>
+
+              <p style="color: #8b8a99; font-size: 13px; margin: 20px 0;">
+                Or copy this link:<br/>
+                <span style="word-break: break-all; color: #6c63ff;">${verificationUrl}</span>
+              </p>
+
+              <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 30px 0;">
+
+              <p style="color: #8b8a99; font-size: 12px; margin: 0;">
+                This link expires in 24 hours. If you didn't create this account, you can ignore this email.
+              </p>
+            </div>
+          </div>
+        `
+      });
+      console.log(`[EMAIL SENT] Verification email sent to ${email}`);
+      return true;
+    } catch (err) {
+      console.error(`[EMAIL ERROR] Failed to send to ${email}:`, err.message);
+      return false;
+    }
+  } else {
+    // Development mode - log the link
+    console.log(`[EMAIL] Verification link for ${email}:\n${verificationUrl}`);
+    return true;
+  }
+}
+
+// ─── POST /api/send-verification-email ────────────────────────────
+// Sends a verification email to the user
+app.post("/api/send-verification-email", async (req, res) => {
+  const { userId, email } = req.body;
+  if (!userId || !email) return res.status(400).json({ error: "Missing fields" });
+
+  try {
+    const token = generateVerificationToken();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+
+    // Store token in profiles table
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({
+        verification_token: token,
+        token_expires_at: expiresAt
+      })
+      .eq("id", userId);
+
+    if (updateError) {
+      return res.status(500).json({ error: "Failed to generate verification token" });
+    }
+
+    // Send verification email via helper function
+    const verificationUrl = `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/verify?token=${token}&userId=${userId}`;
+    await sendVerificationEmail(email, verificationUrl);
+
+    res.json({ ok: true, message: "Verification email sent" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/verify-email ──────────────────────────────────────
+// Verifies the email token and marks user as verified
+app.post("/api/verify-email", async (req, res) => {
+  const { userId, token } = req.body;
+  if (!userId || !token) return res.status(400).json({ error: "Missing fields" });
+
+  try {
+    // Get profile to check token
+    const { data: profile, error: fetchError } = await supabase
+      .from("profiles")
+      .select("verification_token, token_expires_at")
+      .eq("id", userId)
+      .single();
+
+    if (fetchError || !profile) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Check token validity
+    if (profile.verification_token !== token) {
+      return res.status(400).json({ error: "Invalid token" });
+    }
+
+    // Check token expiration
+    if (new Date(profile.token_expires_at) < new Date()) {
+      return res.status(400).json({ error: "Token expired" });
+    }
+
+    // Mark email as verified
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({
+        email_verified: true,
+        verification_token: null,
+        token_expires_at: null
+      })
+      .eq("id", userId);
+
+    if (updateError) {
+      return res.status(500).json({ error: "Failed to verify email" });
+    }
+
+    res.json({ ok: true, message: "Email verified successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── Start ────────────────────────────────────────────────────────
