@@ -295,7 +295,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user) { loadFeed(); loadMyPicks(); loadProfile(); loadCalendarPicks(); }
+    if (user) Promise.all([loadFeed(), loadMyPicks(), loadProfile(), loadCalendarPicks()]);
   }, [user]);
 
   // Poll live match statuses every 60 seconds
@@ -351,44 +351,31 @@ export default function App() {
   }
 
   async function loadProfileScreen(profileId) {
-    if (!user) return; // guest mode — no server profile
+    if (!user) return;
     setProfileLoading(true);
     const targetId = profileId || user?.id;
 
-    // Load profile data
-    const { data: pd } = await supabase
-      .from("profiles").select("*").eq("id", targetId).single();
-    setProfileData(pd);
+    try {
+      const results = await Promise.all([
+        supabase.from("profiles").select("*").eq("id", targetId).single(),
+        supabase.from("picks").select("*").eq("user_id", targetId).order("created_at", { ascending: false }).limit(10),
+        supabase.from("follows").select("*", { count: "exact", head: true }).eq("following_id", targetId),
+        supabase.from("follows").select("*", { count: "exact", head: true }).eq("follower_id", targetId),
+        profileId && profileId !== user?.id
+          ? supabase.from("follows").select("id").eq("follower_id", user?.id).eq("following_id", profileId).single()
+          : Promise.resolve({ data: null })
+      ]);
 
-    // Load picks
-    const { data: picks } = await supabase
-      .from("picks").select("*").eq("user_id", targetId)
-      .order("created_at", { ascending: false }).limit(10);
-    setProfilePicks(picks || []);
+      const [{ data: pd }, { data: picks }, { count: fc }, { count: fg }, { data: followData }] = results;
 
-    // Follower count
-    const { count: fc } = await supabase
-      .from("follows").select("*", { count: "exact", head: true })
-      .eq("following_id", targetId);
-    setFollowerCount(fc || 0);
-
-    // Following count
-    const { count: fg } = await supabase
-      .from("follows").select("*", { count: "exact", head: true })
-      .eq("follower_id", targetId);
-    setFollowingCount(fg || 0);
-
-    // Am I following this person?
-    if (profileId && profileId !== user?.id) {
-      const { data: followData } = await supabase
-        .from("follows").select("id")
-        .eq("follower_id", user?.id)
-        .eq("following_id", profileId)
-        .single();
-      setIsFollowing(!!followData);
+      setProfileData(pd);
+      setProfilePicks(picks || []);
+      setFollowerCount(fc || 0);
+      setFollowingCount(fg || 0);
+      if (profileId && profileId !== user?.id) setIsFollowing(!!followData);
+    } finally {
+      setProfileLoading(false);
     }
-
-    setProfileLoading(false);
   }
 
   async function handleSaveProfile() {
@@ -534,9 +521,7 @@ export default function App() {
     } else if (!data || data.length === 0) {
       alert("Remove failed — please check your Supabase RLS policies allow DELETE on picks where user_id = auth.uid()");
     } else {
-      await loadMyPicks();
-      await loadFeed();
-      await loadCalendarPicks();
+      await Promise.all([loadMyPicks(), loadFeed(), loadCalendarPicks()]);
     }
     setDeletingPickId(null);
   }
@@ -613,7 +598,7 @@ export default function App() {
       if (data.error) { setAdminMsg({ text: `Error: ${data.error}`, ok: false }); }
       else {
         setAdminMsg({ text: result === "correct" ? `+${data.pointsEarned} pts awarded` : `${data.pointsEarned} pts deducted`, ok: true });
-        await loadAdminPicks(); await loadProfile(); await loadMyPicks(); await loadFeed();
+        await Promise.all([loadAdminPicks(), loadProfile(), loadMyPicks(), loadFeed()]);
       }
     } catch { setAdminMsg({ text: "Network error", ok: false }); }
     setResolvingId(null);
@@ -630,7 +615,7 @@ export default function App() {
       });
       const data = await res.json();
       setSettleResult(data);
-      if (!data.error) { await loadAdminPicks(); await loadFeed(); }
+      if (!data.error) { await Promise.all([loadAdminPicks(), loadFeed()]); }
     } catch { setSettleResult({ error: "Network error" }); }
     setSettleLoading(false);
   }
@@ -970,7 +955,7 @@ export default function App() {
     });
     if (error) { setError("Failed to save pick."); setLoading(false); return; }
     if (notifyOnPick) await scheduleMatchReminder(match);
-    await loadFeed(); await loadMyPicks();
+    await Promise.all([loadFeed(), loadMyPicks()]);
     setLoading(false); setScreen("done");
   }
 
@@ -1113,7 +1098,7 @@ export default function App() {
     });
     if (error) { setError("Failed to save acca."); setLoading(false); return; }
     if (notifyOnPick && match) await scheduleMatchReminder(match);
-    await loadFeed(); await loadMyPicks();
+    await Promise.all([loadFeed(), loadMyPicks()]);
     setLoading(false); setBetslip([]); setScreen("done");
   }
 
