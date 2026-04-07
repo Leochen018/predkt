@@ -160,7 +160,7 @@ export default function App() {
   const [simLeaderboard, setSimLeaderboard] = useState(null);
   const [simMatch,      setSimMatch]      = useState("");
 
-  const isAdmin = profile?.role === "admin";
+  const isAdmin = user?.id === process.env.NEXT_PUBLIC_ADMIN_USER_ID;
 
   // Search
   const [searchQuery,   setSearchQuery]   = useState("");
@@ -604,8 +604,9 @@ export default function App() {
   async function resolvePick(pickId, result) {
     setResolvingId(pickId); setAdminMsg({ text: "", ok: true });
     try {
+      const { data: { session } } = await supabase.auth.getSession();
       const res  = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/resolve`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session?.access_token}` },
         body: JSON.stringify({ pickId, result }),
       });
       const data = await res.json();
@@ -622,8 +623,9 @@ export default function App() {
     if (!settleMatch || homeScore === "" || awayScore === "") return;
     setSettleLoading(true); setSettleResult(null);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
       const res  = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/settle`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session?.access_token}` },
         body: JSON.stringify({ match: settleMatch, homeScore: parseInt(homeScore), awayScore: parseInt(awayScore) }),
       });
       const data = await res.json();
@@ -1313,11 +1315,6 @@ export default function App() {
           <div style={s.header}>
             <span style={s.logo}>Predkt</span>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              {isAdmin && (
-                <button onClick={() => setScreen("admin")} style={{ background: "#ef444415", border: "0.5px solid #ef444444", color: "#ef4444", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 6, cursor: "pointer" }}>
-                  Admin
-                </button>
-              )}
               <button onClick={handleLogout} style={{ background: "none", border: "none", color: "#4a4958", fontSize: 12, cursor: "pointer" }}>Log out</button>
             </div>
           </div>
@@ -1922,6 +1919,32 @@ export default function App() {
                       </div>
                       <span style={{ fontSize: 16, color: "#4a4958" }}>›</span>
                     </button>
+                  </div>
+                )}
+
+                {/* Hidden admin tools — own profile + admin user only */}
+                {!viewingProfile && isAdmin && (
+                  <div style={{ padding: "8px 16px 0" }}>
+                    <div style={{ background: "#0d0d14", border: "0.5px solid #1e1e2a", borderRadius: 12, overflow: "hidden" }}>
+                      <button
+                        onClick={() => { loadAdminPicks(); setAdminTab("settle"); setScreen("admin"); }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "none", border: "none", borderBottom: "0.5px solid #1e1e2a", cursor: "pointer" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ fontSize: 18 }}>⚽</span>
+                          <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#f0eff8" }}>Settle Picks</p>
+                        </div>
+                        <span style={{ fontSize: 16, color: "#4a4958" }}>›</span>
+                      </button>
+                      <button
+                        onClick={() => { loadAdminPicks(); setAdminTab("override"); setScreen("admin"); }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "none", border: "none", cursor: "pointer" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ fontSize: 18 }}>✏️</span>
+                          <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#f0eff8" }}>Override Picks</p>
+                        </div>
+                        <span style={{ fontSize: 16, color: "#4a4958" }}>›</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
