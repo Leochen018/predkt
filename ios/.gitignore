@@ -1,0 +1,51 @@
+# Xcode build artifacts
+Predkt.xcodeproj/xcuserdata/
+Predkt.xcworkspace/xcuserdata/
+DerivedData/
+Build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.swiftmodule
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# CocoaPods
+Pods/
+Podfile.lock
+*.podspec.lock
+
+# SPM (Swift Package Manager)
+.build/
+.swiftpm/
+Package.resolved
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# Temp files
+*.tmp
+.cache/

@@ -9,20 +9,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const supabase = createClient(
+const supabaseAdmin    = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
+);
+
+const supabaseStandard = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
 );
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null;
 
-const API_FOOTBALL_BASE    = "https://v3.football.api-sports.io";
-const apiFootballHeaders = () => ({
-  "x-rapidapi-key":  process.env.API_FOOTBALL_KEY,
-  "x-rapidapi-host": "v3.football.api-sports.io",
-});
+const API_FOOTBALL_BASE = "https://v3.football.api-sports.io";
 
 // ─── Scoring helpers (mirrored from lib/scoring.js) ───────────────
 // WIN  = round(4 × odds × (conf/100) × dailyBonus × streakMult)
@@ -69,18 +70,54 @@ function updateDailyStreak(profile) {
   };
 }
 
+// ─── Middleware: requireAdmin ─────────────────────────────────────
+async function requireAdmin(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) return res.status(401).json({ error: "Unauthorized" });
+
+  const token = auth.split(" ")[1];
+  const { data: { user }, error } = await supabaseStandard.auth.getUser(token);
+  if (error || !user) return res.status(401).json({ error: "Invalid token" });
+
+  if (user.id !== process.env.ADMIN_USER_ID) return res.status(403).json({ error: "Forbidden" });
+
+  next();
+}
+
 // ─── GET /api/live ────────────────────────────────────────────────
 const LIVE_STATUSES   = ["1H","HT","2H","ET","BT","P","LIVE","INT"];
 const FINISH_STATUSES = ["FT","AET","PEN","WO","AWD","ABD"];
 
 app.get("/api/live", async (req, res) => {
+  console.log("--- New Request to /api/live ---");
   try {
-    const response = await fetch(`${API_FOOTBALL_BASE}/fixtures?live=all`, { headers: apiFootballHeaders() });
-    if (!response.ok) return res.json({ liveMatches: [], error: "API unavailable" });
+    const apiKey = process.env.API_FOOTBALL_KEY;
+    if (!apiKey) {
+      console.error("❌ SERVER ERROR: API_FOOTBALL_KEY is not defined in .env");
+      return res.status(500).json({ error: "Server API Key missing" });
+    }
 
-    const data     = await response.json();
+    // Try both header styles if you're unsure which one your plan uses
+    const headers = {
+      "x-apisports-key": apiKey,
+      "x-rapidapi-key": apiKey,
+      "x-rapidapi-host": "v3.football.api-sports.io"
+    };
+
+    const response = await fetch(`${API_FOOTBALL_BASE}/fixtures?live=all`, { headers });
+
+    console.log(`Football API Status: ${response.status}`);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("Football API Error:", errText);
+      return res.status(response.status).json({ liveMatches: [], error: "API provider error" });
+    }
+
+    const data = await response.json();
     const fixtures = data.response || [];
 
+    // Map the data
     const liveMatches = fixtures.map(f => ({
       fixtureId:   f.fixture.id,
       home:        f.teams.home.name,
@@ -94,24 +131,30 @@ app.get("/api/live", async (req, res) => {
       isFinished:  FINISH_STATUSES.includes(f.fixture.status.short),
     }));
 
-    res.set("Cache-Control", "no-store").json({ liveMatches });
+    console.log(`Successfully found ${liveMatches.length} matches.`);
+
+    // Explicitly send JSON
+    res.setHeader('Content-Type', 'application/json');
+    res.status(200).json({ liveMatches: liveMatches });
+
   } catch (err) {
-    res.json({ liveMatches: [], error: err.message });
+    console.error("Server Crash:", err.message);
+    res.status(500).json({ liveMatches: [], error: err.message });
   }
 });
 
 // ─── POST /api/resolve ────────────────────────────────────────────
-app.post("/api/resolve", async (req, res) => {
+app.post("/api/resolve", requireAdmin, async (req, res) => {
   const { pickId, result } = req.body;
   if (!pickId || !["correct", "wrong"].includes(result)) {
     return res.status(400).json({ error: "Invalid request" });
   }
 
-  const { data: pick, error: pickError } = await supabase.from("picks").select("*").eq("id", pickId).single();
+  const { data: pick, error: pickError } = await supabaseAdmin.from("picks").select("*").eq("id", pickId).single();
   if (pickError || !pick) return res.status(404).json({ error: "Pick not found" });
   if (pick.result !== "pending") return res.status(400).json({ error: "Pick already resolved" });
 
-  const { data: profile, error: profileError } = await supabase
+  const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
     .select("current_streak, best_streak, weekly_points, total_points, daily_streak, best_daily_streak, last_pick_date")
     .eq("id", pick.user_id).single();
@@ -135,14 +178,14 @@ app.post("/api/resolve", async (req, res) => {
   const newTotalPoints  = (parseInt(profile.total_points)  || 0) + finalPoints;
   const dailyUpdate     = updateDailyStreak(profile);
 
-  await supabase.from("picks").update({
+  await supabaseAdmin.from("picks").update({
     result,
     points_earned:            finalPoints,
     streak_multiplier:        multiplier,
     points_before_multiplier: result === "correct" ? basePoints : null,
   }).eq("id", pickId);
 
-  await supabase.from("profiles").update({
+  await supabaseAdmin.from("profiles").update({
     current_streak:    newStreak,
     best_streak:       newBest,
     weekly_points:     newWeeklyPoints,
@@ -156,13 +199,13 @@ app.post("/api/resolve", async (req, res) => {
 });
 
 // ─── POST /api/settle ─────────────────────────────────────────────
-app.post("/api/settle", async (req, res) => {
+app.post("/api/settle", requireAdmin, async (req, res) => {
   const { match, homeScore, awayScore } = req.body;
   if (!match || homeScore === undefined || awayScore === undefined) {
     return res.status(400).json({ error: "Missing match or scores" });
   }
 
-  const { data: picks, error: fetchError } = await supabase.from("picks").select("*").eq("match", match).eq("result", "pending");
+  const { data: picks, error: fetchError } = await supabaseAdmin.from("picks").select("*").eq("match", match).eq("result", "pending");
   if (fetchError) return res.status(500).json({ error: fetchError.message });
   if (!picks || picks.length === 0) return res.json({ settled: 0, results: [] });
 
@@ -193,7 +236,7 @@ app.post("/api/settle", async (req, res) => {
     const result = correct ? "correct" : "wrong";
 
     if (!profileCache[pick.user_id]) {
-      const { data: p } = await supabase.from("profiles")
+      const { data: p } = await supabaseAdmin.from("profiles")
         .select("current_streak, best_streak, weekly_points, total_points, daily_streak, best_daily_streak, last_pick_date")
         .eq("id", pick.user_id).single();
       profileCache[pick.user_id] = p;
@@ -226,14 +269,14 @@ app.post("/api/settle", async (req, res) => {
       last_pick_date:    dailyUp.last_pick_date,
     };
 
-    await supabase.from("picks").update({
+    await supabaseAdmin.from("picks").update({
       result,
       points_earned:            finalPoints,
       streak_multiplier:        multiplier,
       points_before_multiplier: result === "correct" ? basePoints : null,
     }).eq("id", pick.id);
 
-    await supabase.from("profiles").update(profileCache[pick.user_id]).eq("id", pick.user_id);
+    await supabaseAdmin.from("profiles").update(profileCache[pick.user_id]).eq("id", pick.user_id);
 
     results.push({ id: pick.id, market: pick.market, result, pointsEarned: finalPoints, multiplier, newStreak });
   }
@@ -247,7 +290,7 @@ app.post("/api/simulate", async (req, res) => {
   if (!picks) return res.status(400).json({ error: "Missing picks" });
 
   const userIds = [...new Set(picks.map(p => p.user_id))];
-  const { data: profiles } = await supabase.from("profiles")
+  const { data: profiles } = await supabaseAdmin.from("profiles")
     .select("id, username, current_streak")
     .in("id", userIds);
 
@@ -301,19 +344,19 @@ app.post("/api/invite-league", async (req, res) => {
   const { leagueId, inviterUserId, email } = req.body;
   if (!leagueId || !inviterUserId || !email) return res.status(400).json({ error: "Missing fields" });
 
-  const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
+  const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers();
   if (authError) return res.status(500).json({ error: "Could not search users" });
 
   const targetUser = authData.users.find(u => u.email?.toLowerCase() === email.toLowerCase());
   if (!targetUser) return res.status(404).json({ error: "No Predkt account found with that email" });
 
-  const { data: profile } = await supabase.from("profiles").select("is_anonymous, username").eq("id", targetUser.id).single();
+  const { data: profile } = await supabaseAdmin.from("profiles").select("is_anonymous, username").eq("id", targetUser.id).single();
   if (profile?.is_anonymous) return res.status(400).json({ error: "That user hasn't created a full account yet" });
 
-  const { data: existing } = await supabase.from("league_members").select("id").eq("league_id", leagueId).eq("user_id", targetUser.id).single();
+  const { data: existing } = await supabaseAdmin.from("league_members").select("id").eq("league_id", leagueId).eq("user_id", targetUser.id).single();
   if (existing) return res.status(400).json({ error: "That user is already in this league" });
 
-  const { error: joinError } = await supabase.from("league_members").insert({ league_id: leagueId, user_id: targetUser.id });
+  const { error: joinError } = await supabaseAdmin.from("league_members").insert({ league_id: leagueId, user_id: targetUser.id });
   if (joinError) return res.status(500).json({ error: joinError.message });
 
   res.json({ username: profile?.username || email });
@@ -325,14 +368,14 @@ app.post("/api/confirm-email", async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: "Missing email" });
 
-  const { data, error } = await supabase.auth.admin.listUsers();
+  const { data, error } = await supabaseAdmin.auth.admin.listUsers();
   if (error) return res.status(500).json({ error: "Could not look up user" });
 
   const user = (data?.users || []).find(u => u.email?.toLowerCase() === email.toLowerCase());
   if (!user) return res.status(404).json({ error: "No account found with that email" });
   if (user.email_confirmed_at) return res.json({ ok: true }); // already confirmed
 
-  const { error: updateError } = await supabase.auth.admin.updateUserById(user.id, { email_confirm: true });
+  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, { email_confirm: true });
   if (updateError) return res.status(500).json({ error: updateError.message });
 
   res.json({ ok: true });
@@ -345,12 +388,12 @@ app.post("/api/signup", async (req, res) => {
   if (!email || !password || !username) return res.status(400).json({ error: "Missing fields" });
 
   // Check if email already registered
-  const { data: existing } = await supabase.auth.admin.listUsers();
+  const { data: existing } = await supabaseAdmin.auth.admin.listUsers();
   const alreadyExists = (existing?.users || []).find(u => u.email?.toLowerCase() === email.toLowerCase());
   if (alreadyExists) return res.status(400).json({ error: "An account with that email already exists" });
 
   // Create user WITHOUT pre-confirming email — will send verification email instead
-  const { data, error } = await supabase.auth.admin.createUser({
+  const { data, error } = await supabaseAdmin.auth.admin.createUser({
     email,
     password,
     email_confirm: false, // Changed: don't auto-confirm, send verification instead
@@ -360,7 +403,7 @@ app.post("/api/signup", async (req, res) => {
   const userId = data.user.id;
 
   // Create profile
-  const { error: profileError } = await supabase.from("profiles").upsert({
+  const { error: profileError } = await supabaseAdmin.from("profiles").upsert({
     id:           userId,
     username:     username.trim(),
     display_name: username.trim(),
@@ -396,12 +439,12 @@ app.post("/api/upgrade", async (req, res) => {
   if (!userId || !email || !password) return res.status(400).json({ error: "Missing fields" });
 
   // Check email not already taken by another account
-  const { data: existing } = await supabase.auth.admin.listUsers();
+  const { data: existing } = await supabaseAdmin.auth.admin.listUsers();
   const taken = (existing?.users || []).find(u => u.email?.toLowerCase() === email.toLowerCase() && u.id !== userId);
   if (taken) return res.status(400).json({ error: "An account with that email already exists" });
 
   // Update the anonymous user's email+password WITHOUT pre-confirming
-  const { error } = await supabase.auth.admin.updateUserById(userId, {
+  const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     email,
     password,
     email_confirm: false, // Changed: don't auto-confirm, send verification instead
@@ -409,7 +452,7 @@ app.post("/api/upgrade", async (req, res) => {
   if (error) return res.status(400).json({ error: error.message });
 
   // Mark profile as no longer anonymous and set email_verified to false
-  await supabase.from("profiles").update({ is_anonymous: false, email_verified: false }).eq("id", userId);
+  await supabaseAdmin.from("profiles").update({ is_anonymous: false, email_verified: false }).eq("id", userId);
 
   // Generate and send verification email
   const token = generateVerificationToken();

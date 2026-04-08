@@ -1,16 +1,14 @@
 {
-  "name": "prophit",
-  "version": "0.1.0",
+  "name": "predkt",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "dev": "cd files && npm run dev",
+    "build": "cd files && npm run build",
+    "start": "npm run build && cd files && npm start",
+    "start:backend": "cd server && npm start"
   },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.100.1",
-    "next": "^14.0.0",
-    "react": "^18.0.0",
-    "react-dom": "^18.0.0"
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
