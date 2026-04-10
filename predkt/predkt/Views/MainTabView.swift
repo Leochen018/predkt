@@ -2,7 +2,7 @@ import SwiftUI
 import Supabase
 import Auth
 
-// MARK: - App Colour System (defined once here)
+// MARK: - App Colour System
 extension Color {
     static let predktBg     = Color(red: 0.031, green: 0.035, blue: 0.055)
     static let predktCard   = Color(red: 0.071, green: 0.078, blue: 0.114)
@@ -40,11 +40,19 @@ struct MainTabView: View {
                 .tabItem { Label("Leagues",  systemImage: "trophy.fill") }
                 .tag(2)
 
+            CalendarView()
+                .tabItem { Label("History",  systemImage: "calendar") }
+                .tag(3)
+
             ProfileView()
                 .tabItem { Label("My Stats", systemImage: "chart.bar.fill") }
-                .tag(3)
+                .tag(4)
         }
         .tint(Color.predktLime)
+        .onAppear {
+            // Clear notification badge when app opens
+            NotificationManager.shared.clearBadge()
+        }
     }
 }
 
@@ -65,9 +73,16 @@ struct ProfileView: View {
         return supabaseManager.user?.email.map { String($0.split(separator: "@").first ?? "Player") } ?? "Player"
     }
 
-    private var xpTotal: Int   { feedViewModel.userProfile?.total_points ?? 0 }
-    private var level: Int     { max(1, xpTotal / 500 + 1) }
-    private var xpInLevel: Int { xpTotal % 500 }
+    private var xpTotal: Int      { feedViewModel.userProfile?.total_points ?? 0 }
+    private var level: Int        { max(1, xpTotal / 500 + 1) }
+    private var xpInLevel: Int    { xpTotal % 500 }
+    private var winStreak: Int    { feedViewModel.userProfile?.current_streak ?? 0 }
+    private var dailyStreak: Int  { feedViewModel.userProfile?.daily_streak ?? 0 }
+    private var bestStreak: Int   { feedViewModel.userProfile?.best_streak ?? 0 }
+
+    // Streak multiplier
+    private var streakMultiplier: Double { min(2.0, 1.0 + Double(winStreak) * 0.1) }
+    private var dailyBonus: Double       { dailyStreak >= 2 ? 1.2 : 1.0 }
 
     var body: some View {
         ZStack {
@@ -135,9 +150,8 @@ struct ProfileView: View {
                                         Text(displayUsername)
                                             .font(.system(size: 22, weight: .black)).foregroundStyle(.white)
                                         Button(action: {
-                                            editedUsername = displayUsername
-                                            usernameError = nil; usernameSaved = false
-                                            isEditingUsername = true
+                                            editedUsername = displayUsername; usernameError = nil
+                                            usernameSaved = false; isEditingUsername = true
                                         }) {
                                             Image(systemName: "pencil")
                                                 .font(.system(size: 12)).foregroundStyle(Color.predktLime)
@@ -173,14 +187,66 @@ struct ProfileView: View {
                         }
                         .padding(20).background(Color.predktCard).cornerRadius(20)
 
-                        // Stats grid
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            XPStatCard(label: "Total XP",     value: "\(xpTotal)",  icon: "⚡")
-                            XPStatCard(label: "This Week",    value: "\(feedViewModel.userProfile?.weekly_points ?? 0)", icon: "📈")
-                            XPStatCard(label: "Best Streak",  value: "\(feedViewModel.userProfile?.best_streak ?? 0)🔥",  icon: "🏆")
-                            XPStatCard(label: "Daily Streak", value: "\(feedViewModel.userProfile?.daily_streak ?? 0)🔥",  icon: "📅")
+                        // ✅ Streak cards — prominently displayed
+                        HStack(spacing: 12) {
+                            StreakCard(
+                                icon: "🔥",
+                                value: "\(winStreak)",
+                                label: "Win Streak",
+                                sublabel: streakMultiplier > 1.0 ? "×\(String(format: "%.1f", streakMultiplier)) multiplier" : "Win to start streak",
+                                colour: winStreak > 0 ? Color.predktAmber : Color.predktMuted
+                            )
+                            StreakCard(
+                                icon: "📅",
+                                value: "\(dailyStreak)",
+                                label: "Daily Streak",
+                                sublabel: dailyStreak >= 2 ? "×1.2 bonus active!" : "Play tomorrow",
+                                colour: dailyStreak >= 2 ? Color.predktLime : Color.predktMuted
+                            )
                         }
 
+                        // ✅ How streaks work explainer
+                        if winStreak > 0 || dailyStreak > 0 {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("YOUR MULTIPLIERS")
+                                    .font(.system(size: 10, weight: .black))
+                                    .foregroundStyle(Color.predktMuted).kerning(1.5)
+
+                                HStack {
+                                    Label("Win streak ×\(String(format: "%.1f", streakMultiplier))", systemImage: "flame.fill")
+                                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.predktAmber)
+                                    Spacer()
+                                    Text("+\(Int((streakMultiplier - 1) * 100))% on all XP")
+                                        .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                                }
+
+                                if dailyStreak >= 2 {
+                                    HStack {
+                                        Label("Daily streak ×1.2", systemImage: "calendar.badge.checkmark")
+                                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.predktLime)
+                                        Spacer()
+                                        Text("+20% on all XP")
+                                            .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                                    }
+                                }
+                            }
+                            .padding(14)
+                            .background(Color.predktCard)
+                            .cornerRadius(14)
+                        }
+
+                        // Stats grid
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            XPStatCard(label: "Total XP",    value: "\(xpTotal)",  icon: "⚡")
+                            XPStatCard(label: "This Week",   value: "\(feedViewModel.userProfile?.weekly_points ?? 0)", icon: "📈")
+                            XPStatCard(label: "Best Streak", value: "\(bestStreak)🔥", icon: "🏆")
+                            XPStatCard(label: "Best Daily",  value: "\(feedViewModel.userProfile?.best_daily_streak ?? 0)🔥", icon: "📅")
+                        }
+
+                        // Notifications toggle
+                        NotificationSettingsCard()
+
+                        // Log out
                         Button(action: { Task { try? await supabaseManager.logout() } }) {
                             Text("Log Out")
                                 .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.predktCoral)
@@ -213,17 +279,79 @@ struct ProfileView: View {
     }
 }
 
+// MARK: - Streak Card
+
+struct StreakCard: View {
+    let icon: String; let value: String; let label: String
+    let sublabel: String; let colour: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(icon).font(.system(size: 24))
+                Spacer()
+                Text(value).font(.system(size: 32, weight: .black)).foregroundStyle(colour)
+            }
+            Text(label).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+            Text(sublabel).font(.system(size: 10)).foregroundStyle(Color.predktMuted).lineLimit(1)
+        }
+        .padding(14)
+        .background(Color.predktCard)
+        .cornerRadius(16)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(colour.opacity(0.2), lineWidth: 1))
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Notification Settings Card
+
+struct NotificationSettingsCard: View {
+    @ObservedObject var notifManager = NotificationManager.shared
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: notifManager.isAuthorized ? "bell.fill" : "bell.slash.fill")
+                .font(.system(size: 20))
+                .foregroundStyle(notifManager.isAuthorized ? Color.predktLime : Color.predktMuted)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Notifications")
+                    .font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                Text(notifManager.isAuthorized ? "Kickoff reminders & results enabled" : "Tap to enable notifications")
+                    .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+            }
+            Spacer()
+            if !notifManager.isAuthorized {
+                Button(action: {
+                    Task { await notifManager.requestPermission() }
+                }) {
+                    Text("Enable")
+                        .font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Color.predktLime).cornerRadius(8)
+                }
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.predktLime).font(.system(size: 18))
+            }
+        }
+        .padding(14)
+        .background(Color.predktCard)
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.predktBorder, lineWidth: 1))
+    }
+}
+
+// MARK: - XP Stat Card
+
 struct XPStatCard: View {
-    let label: String
-    let value: String
-    let icon: String
+    let label: String; let value: String; let icon: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(icon).font(.system(size: 22))
             Text(value).font(.system(size: 24, weight: .black)).foregroundStyle(Color.predktLime)
-            Text(label.uppercased())
-                .font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
+            Text(label.uppercased()).font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16).background(Color.predktCard).cornerRadius(16)

@@ -1,4 +1,5 @@
 import SwiftUI
+import Supabase
 
 struct PredictView: View {
     @StateObject private var viewModel = PredictViewModel()
@@ -68,60 +69,70 @@ struct PredictView: View {
                         Text("⚠️").font(.system(size: 40))
                         Text(error).foregroundStyle(Color.predktCoral).multilineTextAlignment(.center)
                         Button(action: { Task { await viewModel.refreshMatches() } }) {
-                            Text("Try Again")
-                                .font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
-                                .padding(.horizontal, 24).padding(.vertical, 10)
-                                .background(Color.predktLime).cornerRadius(12)
+                            Text("Try Again").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                                .padding(.horizontal, 24).padding(.vertical, 10).background(Color.predktLime).cornerRadius(12)
                         }
                     }
                     .padding(20)
                     Spacer()
                 } else {
-                    // ✅ Full-page swipe area
+                    // ✅ Swipe on the whole content area using simultaneousGesture
+                    // so it doesn't conflict with the ScrollView's vertical scroll
                     matchContent
-                        .gesture(
-                            DragGesture(minimumDistance: 40, coordinateSpace: .local)
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 30, coordinateSpace: .local)
                                 .onEnded { value in
                                     let h = value.translation.width
                                     let v = abs(value.translation.height)
-                                    guard abs(h) > v else { return }
+                                    // Only trigger if gesture is clearly horizontal
+                                    guard abs(h) > v * 1.5 else { return }
                                     withAnimation(.easeInOut(duration: 0.25)) {
-                                        if h < -40 { viewModel.goToNextDay() }
-                                        else if h > 40 { viewModel.goToPreviousDay() }
+                                        if h < -30 { viewModel.goToNextDay() }
+                                        else if h > 30 { viewModel.goToPreviousDay() }
                                     }
                                 }
                         )
                 }
             }
         }
-        .onAppear { Task { await viewModel.loadMatches() } }
+        .onAppear {
+            Task {
+                await viewModel.loadMatches()
+                if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
+                    myPicksCount = picks.count
+                }
+            }
+        }
         .sheet(isPresented: $showingQuestions) {
             if let match = selectedMatch {
                 QuestionsSheetView(
                     match: match,
                     viewModel: viewModel,
                     myPicksCount: myPicksCount,
-                    isPresented: $showingQuestions
+                    isPresented: $showingQuestions,
+                    onSubmit: {
+                        Task {
+                            if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
+                                myPicksCount = picks.count
+                            }
+                        }
+                    }
                 )
             }
         }
     }
 
-    // Extracted so the gesture applies to the whole content area
     @ViewBuilder
     private var matchContent: some View {
         if viewModel.matchesByLeague.isEmpty {
             EmptyMatchesCard(onNext: { viewModel.goToNextDay() })
         } else {
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    // Count bar
+                LazyVStack(spacing: 0) {
                     HStack {
                         Text("\(viewModel.filteredMatches.count) MATCHES · \(viewModel.matchesByLeague.count) COMPETITIONS")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(Color.predktMuted).kerning(1)
+                            .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
                         Spacer()
-                        // Swipe hint
                         HStack(spacing: 3) {
                             Image(systemName: "chevron.left").font(.system(size: 8))
                             Text("SWIPE").font(.system(size: 8, weight: .bold)).kerning(1)
@@ -159,22 +170,17 @@ struct LeagueSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // League header — sticky
             Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
                 HStack(spacing: 10) {
                     Rectangle().fill(Color.predktLime).frame(width: 3, height: 16).cornerRadius(2)
-                    Text(league.uppercased())
-                        .font(.system(size: 11, weight: .black)).foregroundStyle(.white).kerning(0.5)
+                    Text(league.uppercased()).font(.system(size: 11, weight: .black)).foregroundStyle(.white).kerning(0.5)
                     Spacer()
-                    Text("\(matches.count)")
-                        .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Color.predktLime.opacity(0.12)).cornerRadius(6)
+                    Text("\(matches.count)").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
+                        .padding(.horizontal, 7).padding(.vertical, 3).background(Color.predktLime.opacity(0.12)).cornerRadius(6)
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
-                .padding(.horizontal, 20).padding(.vertical, 12)
-                .background(Color.predktCard.opacity(0.5))
+                .padding(.horizontal, 20).padding(.vertical, 12).background(Color.predktCard.opacity(0.5))
             }
             .buttonStyle(PlainButtonStyle())
 
@@ -193,80 +199,65 @@ struct LeagueSection: View {
                 }
                 .background(Color.predktBg)
             }
-
             Divider().background(Color.predktBorder)
         }
     }
 }
 
-// MARK: - Match Row — bigger, no chevron
+// MARK: - Match Row — clean, no pick chips
 
 struct MatchRow: View {
     let match: Match
 
     var body: some View {
         HStack(spacing: 0) {
-            // Time column
+            // Time
             VStack(spacing: 4) {
                 if match.isLive {
                     Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
                     Text(match.elapsed.map { "\($0)'" } ?? "LIVE")
                         .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
                 } else if match.isFinished {
-                    Text("FT")
-                        .font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
+                    Text("FT").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
                 } else {
                     Text(match.kickoffTime)
                         .font(.system(size: 15, weight: .black)).foregroundStyle(Color.predktLime)
-                    Text("KO")
-                        .font(.system(size: 8, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.6))
+                    Text("KO").font(.system(size: 8, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.6))
                 }
             }
             .frame(width: 60)
 
             Rectangle().fill(Color.predktBorder).frame(width: 1, height: 60)
 
-            // Teams + score
             HStack(spacing: 0) {
-                // Home
                 HStack(spacing: 10) {
                     TeamBadgeView(url: match.homeLogo).frame(width: 28, height: 28)
-                    Text(match.home)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white).lineLimit(1)
+                    Text(match.home).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                // Score / VS
                 if match.isLive || match.isFinished {
                     VStack(spacing: 2) {
-                        Text(match.score)
-                            .font(.system(size: 16, weight: .black)).foregroundStyle(.white)
+                        Text(match.score).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
                         if match.isLive {
-                            Text("LIVE").font(.system(size: 7, weight: .black))
-                                .foregroundStyle(Color.predktCoral)
+                            Text("LIVE").font(.system(size: 7, weight: .black)).foregroundStyle(Color.predktCoral)
                         }
                     }
                     .frame(width: 60)
                 } else {
-                    Text("vs")
-                        .font(.system(size: 12)).foregroundStyle(Color.predktMuted)
-                        .frame(width: 60)
+                    Text("vs").font(.system(size: 12)).foregroundStyle(Color.predktMuted).frame(width: 60)
                 }
 
-                // Away
                 HStack(spacing: 10) {
-                    Text(match.away)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white).lineLimit(1)
-                        .multilineTextAlignment(.trailing)
+                    Text(match.away).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                        .lineLimit(1).multilineTextAlignment(.trailing)
                     TeamBadgeView(url: match.awayLogo).frame(width: 28, height: 28)
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 16)
         }
-        .frame(height: 72)   // ✅ Bigger row height (was 56)
+        .frame(height: 72)
         .background(Color.predktBg)
         .contentShape(Rectangle())
     }
@@ -279,6 +270,7 @@ struct QuestionsSheetView: View {
     @ObservedObject var viewModel: PredictViewModel
     let myPicksCount: Int
     @Binding var isPresented: Bool
+    let onSubmit: () -> Void
 
     var questions: [PredictViewModel.Question] { viewModel.getQuestions(for: match) }
 
@@ -286,21 +278,17 @@ struct QuestionsSheetView: View {
         ZStack(alignment: .bottom) {
             Color.predktBg.ignoresSafeArea()
             VStack(spacing: 0) {
-                // Match header
                 VStack(spacing: 12) {
                     HStack {
                         Button(action: { isPresented = false }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(Color.predktMuted)
-                                .padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
+                            Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.predktMuted).padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
                         }
                         Spacer()
                         if match.isLive {
                             HStack(spacing: 4) {
                                 Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
-                                Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
-                                    .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
+                                Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")").font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
                             }
                         }
                     }
@@ -309,15 +297,12 @@ struct QuestionsSheetView: View {
                     HStack(spacing: 16) {
                         TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
                         VStack(spacing: 2) {
-                            Text(match.displayName)
-                                .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
-                                .multilineTextAlignment(.center)
+                            Text(match.displayName).font(.system(size: 15, weight: .black)).foregroundStyle(.white).multilineTextAlignment(.center)
                             HStack(spacing: 6) {
                                 Text(match.competition).font(.system(size: 11)).foregroundStyle(Color.predktMuted)
                                 if !match.isLive, !match.isFinished {
                                     Text("·").foregroundStyle(Color.predktMuted)
-                                    Text("\(match.matchDate) · \(match.kickoffTime)")
-                                        .font(.system(size: 11)).foregroundStyle(Color.predktLime)
+                                    Text("\(match.matchDate) · \(match.kickoffTime)").font(.system(size: 11)).foregroundStyle(Color.predktLime)
                                 }
                             }
                         }
@@ -342,14 +327,13 @@ struct QuestionsSheetView: View {
                 }
             }
 
-            // Floating submit
             if !viewModel.lockedAnswers.isEmpty {
                 VStack(spacing: 0) {
                     LinearGradient(colors: [Color.predktBg.opacity(0), Color.predktBg], startPoint: .top, endPoint: .bottom).frame(height: 24)
                     Button(action: {
                         Task {
                             let success = await viewModel.submitPlays(match: match, myPicksCount: myPicksCount)
-                            if success { isPresented = false }
+                            if success { isPresented = false; onSubmit() }
                         }
                     }) {
                         HStack {
@@ -401,8 +385,7 @@ struct QuestionCard: View {
             .buttonStyle(PlainButtonStyle())
 
             if isExpanded {
-                Text(question.prompt)
-                    .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+                Text(question.prompt).font(.system(size: 18, weight: .black)).foregroundStyle(.white)
                     .padding(.horizontal, 16).padding(.bottom, 14)
                 VStack(spacing: 8) {
                     ForEach(question.answers) { answer in
@@ -425,7 +408,6 @@ struct AnswerPollRow: View {
 
     var isLocked: Bool     { viewModel.isLocked(answer) }
     var isConflicted: Bool { viewModel.conflicts(answer) }
-
     var xpColour: Color {
         switch answer.probability {
         case 0..<30:  return Color.predktCoral
@@ -454,8 +436,14 @@ struct AnswerPollRow: View {
                         .lineLimit(2)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black))
-                            .foregroundStyle(isLocked ? Color.predktLime : xpColour)
+                        HStack(spacing: 4) {
+                            if isLocked {
+                                Text("TAP TO REMOVE").font(.system(size: 7, weight: .bold))
+                                    .foregroundStyle(Color.predktLime.opacity(0.7)).kerning(0.5)
+                            }
+                            Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black))
+                                .foregroundStyle(isLocked ? Color.predktLime : xpColour)
+                        }
                         Text(answer.probabilityDisplay).font(.system(size: 10))
                             .foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
                     }
@@ -464,8 +452,13 @@ struct AnswerPollRow: View {
             }
             .frame(height: 52)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.03))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(isLocked ? Color.predktLime.opacity(0.5) : Color.predktBorder, lineWidth: 1)))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(
+                    isLocked ? Color.predktLime.opacity(0.5) : Color.predktBorder,
+                    lineWidth: isLocked ? 1.5 : 1
+                )))
             .opacity(isConflicted ? 0.35 : 1.0)
+            .scaleEffect(isLocked ? 1.01 : 1.0)
+            .animation(.easeOut(duration: 0.15), value: isLocked)
         }
         .buttonStyle(PlainButtonStyle()).disabled(isConflicted)
     }
@@ -484,8 +477,7 @@ struct LockedAnswersBanner: View {
                     HStack(spacing: 6) {
                         ForEach(viewModel.lockedAnswers) { answer in
                             Text(answer.shortLabel).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(Color.predktLime.opacity(0.15)).cornerRadius(6)
+                                .padding(.horizontal, 8).padding(.vertical, 4).background(Color.predktLime.opacity(0.15)).cornerRadius(6)
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.predktLime.opacity(0.3), lineWidth: 1))
                         }
                     }
@@ -506,18 +498,14 @@ struct LockedAnswersBanner: View {
 // MARK: - Date Chip
 
 struct GameDateChip: View {
-    let date: Date
-    let isSelected: Bool
-    let action: () -> Void
+    let date: Date; let isSelected: Bool; let action: () -> Void
     var isToday: Bool { Calendar.current.isDateInToday(date) }
-
     var body: some View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Text(isToday ? "TODAY" : date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
                     .font(.system(size: 8, weight: .black)).kerning(1)
-                Text(date.formatted(.dateTime.day()))
-                    .font(.system(size: 17, weight: .black))
+                Text(date.formatted(.dateTime.day())).font(.system(size: 17, weight: .black))
             }
             .foregroundStyle(isSelected ? .black : Color.predktMuted)
             .frame(width: 52, height: 60)
@@ -535,8 +523,7 @@ struct EmptyMatchesCard: View {
     var body: some View {
         VStack(spacing: 16) {
             Text("🏟️").font(.system(size: 48))
-            Text("No matches today")
-                .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+            Text("No matches today").font(.system(size: 18, weight: .black)).foregroundStyle(.white)
             Text("Swipe left or tap below to check the next day")
                 .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
             Button(action: onNext) {
@@ -544,12 +531,10 @@ struct EmptyMatchesCard: View {
                     Text("Next Day").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
                     Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
                 }
-                .padding(.horizontal, 24).padding(.vertical, 12)
-                .background(Color.predktLime).cornerRadius(12)
+                .padding(.horizontal, 24).padding(.vertical, 12).background(Color.predktLime).cornerRadius(12)
             }
         }
-        .padding(40).frame(maxWidth: .infinity)
-        .background(Color.predktCard).cornerRadius(20)
+        .padding(40).frame(maxWidth: .infinity).background(Color.predktCard).cornerRadius(20)
         .padding(.horizontal, 20).padding(.top, 60)
     }
 }
