@@ -7,138 +7,258 @@ final class PredictViewModel: ObservableObject {
     @Published var selectedDate: Date = Date()
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var confidence: Int = 70
     @Published var selectedMatch: Match?
     @Published var isSubmitting = false
+    @Published var selectedMarkets: [Market] = []
 
     private var matchesLoaded = false
     private let supabaseManager = SupabaseManager.shared
+    private let topLeagueIDs = [39, 140, 135, 78, 61, 94, 88, 2, 3]
 
-    private let topLeagueIDs = [
-        39,   // Premier League
-        140,  // La Liga
-        135,  // Serie A
-        78,   // Bundesliga
-        61,   // Ligue 1
-        94,   // Primeira Liga
-        88,   // Eredivisie
-        2,    // Champions League
-        3     // Europa League
-    ]
+    // MARK: - Market Model
 
-    struct Market: Identifiable {
+    struct Market: Identifiable, Equatable {
         let id = UUID()
         let label: String
+        let sublabel: String?   // e.g. player name for props
+        let probability: Int
         let odds: Double
-        let category: String
+        let group: String       // conflict group
+
+        var pointsValue: Int { max(1, 10 + (100 - probability)) }
+        var probabilityDisplay: String { "\(probability)%" }
+        static func == (lhs: Market, rhs: Market) -> Bool { lhs.id == rhs.id }
+
+        init(_ label: String, odds: Double, group: String, sublabel: String? = nil) {
+            self.label      = label
+            self.sublabel   = sublabel
+            self.odds       = odds
+            self.group      = group
+            self.probability = min(99, max(1, Int(round(1.0 / odds * 100))))
+        }
     }
 
-    // MARK: - Date Parsing
+    // MARK: - Market Groups
+
+    struct MarketGroup: Identifiable {
+        let id = UUID()
+        let title: String
+        let icon: String
+        let markets: [Market]
+        var isEmpty: Bool { markets.isEmpty }
+    }
+
+    func getMarketGroups(for match: Match) -> [MarketGroup] {
+        let o = match.odds
+        var groups: [MarketGroup] = []
+
+        // Helper: only include market if odds exist
+        func m(_ label: String, _ odd: Double?, _ group: String, sub: String? = nil) -> Market? {
+            guard let odd, odd > 1.0 else { return nil }
+            return Market(label, odds: odd, group: group, sublabel: sub)
+        }
+        func markets(_ items: [Market?]) -> [Market] { items.compactMap { $0 } }
+
+        // 1. Match Result
+        groups.append(MarketGroup(title: "Match Result", icon: "trophy", markets: markets([
+            m("Home Win",  o?.homeWin,  "result"),
+            m("Draw",      o?.draw,     "result"),
+            m("Away Win",  o?.awayWin,  "result"),
+        ])))
+
+        // 2. Double Chance
+        groups.append(MarketGroup(title: "Double Chance", icon: "shield.lefthalf.filled", markets: markets([
+            m("\(match.home) or Draw", o?.homeOrDraw, "dc"),
+            m("\(match.away) or Draw", o?.awayOrDraw, "dc"),
+            m("\(match.home) or \(match.away)", o?.homeOrAway, "dc"),
+        ])))
+
+        // 3. Draw No Bet
+        groups.append(MarketGroup(title: "Draw No Bet", icon: "arrow.left.arrow.right", markets: markets([
+            m(match.home, o?.dnbHome, "dnb"),
+            m(match.away, o?.dnbAway, "dnb"),
+        ])))
+
+        // 4. Half Time Result
+        groups.append(MarketGroup(title: "Half Time Result", icon: "clock", markets: markets([
+            m("Home Win", o?.htHomeWin, "ht_result"),
+            m("Draw",     o?.htDraw,    "ht_result"),
+            m("Away Win", o?.htAwayWin, "ht_result"),
+        ])))
+
+        // 5. Goals Over/Under (show most popular lines)
+        let goalMarkets: [Market?] = [
+            m("Over 0.5",  o?.over05,  "goals_05"),
+            m("Under 0.5", o?.under05, "goals_05"),
+            m("Over 1.5",  o?.over15,  "goals_15"),
+            m("Under 1.5", o?.under15, "goals_15"),
+            m("Over 2.5",  o?.over25,  "goals_25"),
+            m("Under 2.5", o?.under25, "goals_25"),
+            m("Over 3.5",  o?.over35,  "goals_35"),
+            m("Under 3.5", o?.under35, "goals_35"),
+            m("Over 4.5",  o?.over45,  "goals_45"),
+            m("Under 4.5", o?.under45, "goals_45"),
+        ]
+        groups.append(MarketGroup(title: "Goals Over/Under", icon: "soccerball", markets: markets(goalMarkets)))
+
+        // 6. First Half Goals
+        groups.append(MarketGroup(title: "First Half Goals", icon: "1.circle", markets: markets([
+            m("Over 0.5",  o?.htOver05,  "ht_goals_05"),
+            m("Under 0.5", o?.htUnder05, "ht_goals_05"),
+            m("Over 1.5",  o?.htOver15,  "ht_goals_15"),
+            m("Under 1.5", o?.htUnder15, "ht_goals_15"),
+        ])))
+
+        // 7. Both Teams to Score
+        groups.append(MarketGroup(title: "Both Teams to Score", icon: "arrow.left.and.right.circle", markets: markets([
+            m("Yes", o?.bttsYes, "btts"),
+            m("No",  o?.bttsNo,  "btts"),
+        ])))
+
+        // 8. Corners
+        let cornerMarkets: [Market?] = [
+            m("Over 7.5",  o?.cornersOver75,  "corners_75"),
+            m("Under 7.5", o?.cornersUnder75, "corners_75"),
+            m("Over 8.5",  o?.cornersOver85,  "corners_85"),
+            m("Under 8.5", o?.cornersUnder85, "corners_85"),
+            m("Over 9.5",  o?.cornersOver95,  "corners_95"),
+            m("Under 9.5", o?.cornersUnder95, "corners_95"),
+            m("Over 10.5",  o?.cornersOver105,  "corners_105"),
+            m("Under 10.5", o?.cornersUnder105, "corners_105"),
+        ]
+        groups.append(MarketGroup(title: "Corners", icon: "flag", markets: markets(cornerMarkets)))
+
+        // 9. Cards
+        let cardMarkets: [Market?] = [
+            m("Over 1.5",  o?.cardsOver15,  "cards_15"),
+            m("Under 1.5", o?.cardsUnder15, "cards_15"),
+            m("Over 2.5",  o?.cardsOver25,  "cards_25"),
+            m("Under 2.5", o?.cardsUnder25, "cards_25"),
+            m("Over 3.5",  o?.cardsOver35,  "cards_35"),
+            m("Under 3.5", o?.cardsUnder35, "cards_35"),
+        ]
+        groups.append(MarketGroup(title: "Cards", icon: "rectangle.portrait", markets: markets(cardMarkets)))
+
+        // 10. Clean Sheet
+        groups.append(MarketGroup(title: "Clean Sheet", icon: "lock.shield", markets: markets([
+            m("\(match.home) Clean Sheet", o?.homeCleanSheet, "cs_home"),
+            m("\(match.away) Clean Sheet", o?.awayCleanSheet, "cs_away"),
+        ])))
+
+        // 11. Player — Anytime Goalscorer
+        let anyScorers = (o?.playerAnytime ?? []).compactMap {
+            m($0.name, $0.odd, "player_anytime_\($0.name)")
+        }
+        groups.append(MarketGroup(title: "Anytime Goalscorer", icon: "person.fill.checkmark", markets: anyScorers))
+
+        // 12. Player — First Goalscorer
+        let firstScorers = (o?.playerFirstGoal ?? []).compactMap {
+            m($0.name, $0.odd, "player_first_\($0.name)")
+        }
+        groups.append(MarketGroup(title: "First Goalscorer", icon: "1.circle.fill", markets: firstScorers))
+
+        // 13. Player — Last Goalscorer
+        let lastScorers = (o?.playerLastGoal ?? []).compactMap {
+            m($0.name, $0.odd, "player_last_\($0.name)")
+        }
+        groups.append(MarketGroup(title: "Last Goalscorer", icon: "flag.checkered", markets: lastScorers))
+
+        // 14. Player — To Be Carded
+        let cardedPlayers = (o?.playerToBeCarded ?? []).compactMap {
+            m($0.name, $0.odd, "player_card_\($0.name)")
+        }
+        groups.append(MarketGroup(title: "Player to Be Carded", icon: "rectangle.portrait.fill", markets: cardedPlayers))
+
+        // 15. Player — To Assist
+        let assists = (o?.playerToAssist ?? []).compactMap {
+            m($0.name, $0.odd, "player_assist_\($0.name)")
+        }
+        groups.append(MarketGroup(title: "Player to Assist", icon: "hand.point.right.fill", markets: assists))
+
+        // Filter out empty groups
+        return groups.filter { !$0.isEmpty }
+    }
+
+    // MARK: - Combo Helpers
+
+    var comboPoints: Int { selectedMarkets.reduce(0) { $0 + $1.pointsValue } }
+    var isCombo: Bool { selectedMarkets.count > 1 }
+
+    func toggle(_ market: Market) {
+        if let idx = selectedMarkets.firstIndex(of: market) {
+            selectedMarkets.remove(at: idx)
+        } else {
+            selectedMarkets.removeAll { $0.group == market.group }
+            selectedMarkets.append(market)
+        }
+    }
+
+    func isSelected(_ market: Market) -> Bool { selectedMarkets.contains(market) }
+    func isConflicted(_ market: Market) -> Bool {
+        selectedMarkets.contains { $0.group == market.group && $0 != market }
+    }
+    func clearSelections() { selectedMarkets = [] }
+
+    // MARK: - Filtered Matches
 
     private func parseDate(_ raw: String) -> Date {
-        let withFractional = ISO8601DateFormatter()
-        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = withFractional.date(from: raw) { return d }
-
-        let withoutFractional = ISO8601DateFormatter()
-        withoutFractional.formatOptions = [.withInternetDateTime]
-        if let d = withoutFractional.date(from: raw) { return d }
-
-        print("⚠️ Failed to parse date: \(raw)")
+        let f1 = ISO8601DateFormatter(); f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f1.date(from: raw) { return d }
+        let f2 = ISO8601DateFormatter(); f2.formatOptions = [.withInternetDateTime]
+        if let d = f2.date(from: raw) { return d }
         return Date()
     }
 
-    // MARK: - Filtering
-
     var filteredMatches: [Match] {
-        let calendar = Calendar.current
-
-        return matches.filter { match in
-            let isTopLeague = topLeagueIDs.contains(match.leagueId)
-            let matchDate = parseDate(match.rawDate)
-            let isSameDay = calendar.isDate(matchDate, inSameDayAs: selectedDate)
-            return isTopLeague && isSameDay
-        }
-        .sorted { m1, m2 in
-            if m1.isLive != m2.isLive { return m1.isLive }
-            return m1.rawDate < m2.rawDate
-        }
+        let cal = Calendar.current
+        return matches
+            .filter { topLeagueIDs.contains($0.leagueId) && cal.isDate(parseDate($0.rawDate), inSameDayAs: selectedDate) }
+            .sorted { m1, m2 in m1.isLive != m2.isLive ? m1.isLive : m1.rawDate < m2.rawDate }
     }
 
-    // MARK: - Loading
+    // MARK: - Load
 
     func loadMatches() async {
-        // Only fetch from network once per session; date changes re-filter locally
         guard !matchesLoaded else { return }
-
-        isLoading = true
-        errorMessage = nil
-
+        isLoading = true; errorMessage = nil
         do {
-            let allMatches = try await APIManager.fetchAllMatches()
-            self.matches = allMatches
-            self.matchesLoaded = true
-            print("✅ Loaded \(allMatches.count) matches")
-        } catch let DecodingError.keyNotFound(key, context) {
-            print("❌ Missing Key: '\(key.stringValue)' - \(context.debugDescription)")
-            errorMessage = "Data format error: Missing '\(key.stringValue)'"
-        } catch let DecodingError.typeMismatch(type, context) {
-            print("❌ Type Mismatch: expected '\(type)' - \(context.debugDescription)")
-            errorMessage = "Data format error: Type mismatch"
+            matches = try await APIManager.fetchAllMatches()
+            matchesLoaded = true
+            print("✅ Loaded \(matches.count) matches")
+        } catch let DecodingError.keyNotFound(key, _) {
+            errorMessage = "Missing key: \(key.stringValue)"
+        } catch let DecodingError.typeMismatch(type, _) {
+            errorMessage = "Type mismatch: \(type)"
         } catch {
-            print("❌ General Error: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
         }
-
         isLoading = false
     }
 
-    // Force a fresh fetch (e.g. pull to refresh)
-    func refreshMatches() async {
-        matchesLoaded = false
-        await loadMatches()
-    }
+    func refreshMatches() async { matchesLoaded = false; await loadMatches() }
 
-    // MARK: - Markets
+    // MARK: - Submit
 
-    func getMarkets(for match: Match) -> [Market] {
-        [
-            Market(label: "Home Win",       odds: 2.1, category: "match_result"),
-            Market(label: "Away Win",       odds: 1.9, category: "match_result"),
-            Market(label: "Draw",           odds: 3.2, category: "match_result"),
-            Market(label: "Over 2.5 Goals", odds: 1.8, category: "goals"),
-            Market(label: "Under 2.5 Goals",odds: 2.0, category: "goals"),
-            Market(label: "Both Score",     odds: 2.3, category: "both_score")
-        ]
-    }
+    func submitPicks(match: Match, myPicksCount: Int) async -> Bool {
+        guard !selectedMarkets.isEmpty else { errorMessage = "Select at least one market"; return false }
+        guard myPicksCount + selectedMarkets.count <= 5 else { errorMessage = "Max 5 picks per day"; return false }
 
-    // MARK: - Submit Pick
-
-    func submitPick(market: Market, match: Match, myPicksCount: Int) async -> Bool {
-        guard myPicksCount < 5 else {
-            errorMessage = "Max 5 picks per day"
-            return false
-        }
-
-        isSubmitting = true
-        errorMessage = nil
-
-        let confRatio  = Double(confidence) / 100.0
-        let basePoints = Int(4.0 * market.odds * confRatio)
-        let finalWin   = max(1, basePoints)
-        let finalLoss  = max(1, Int(4.0 * market.odds * confRatio * 0.5))
+        isSubmitting = true; errorMessage = nil
+        let comboId = isCombo ? UUID().uuidString : nil
 
         do {
-            try await supabaseManager.createPick(
-                match: match.displayName,
-                market: market.label,
-                confidence: confidence,
-                odds: market.odds,
-                difficulty: "easy",
-                difficulty_multiplier: 1.0,
-                points_possible: finalWin,
-                points_lost: finalLoss
-            )
+            for market in selectedMarkets {
+                try await supabaseManager.createPick(
+                    match: match.displayName,
+                    market: market.label,
+                    odds: market.odds,
+                    probability: market.probability,
+                    pointsPossible: market.pointsValue,
+                    pointsLost: max(1, market.pointsValue / 2),
+                    comboId: comboId
+                )
+            }
+            clearSelections()
             isSubmitting = false
             return true
         } catch {
