@@ -4,6 +4,7 @@ import Combine
 @MainActor
 final class PredictViewModel: ObservableObject {
     @Published var matches: [Match] = []
+    @Published var selectedDate: Date = Date()
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var confidence: Int = 70
@@ -11,8 +12,20 @@ final class PredictViewModel: ObservableObject {
     @Published var isSubmitting = false
 
     private let supabaseManager = SupabaseManager.shared
+    
+    // The definitive IDs for the Top 7 + European Cups
+    private let topLeagueIDs = [
+        39,   // Premier League (England)
+        140,  // La Liga (Spain)
+        135,  // Serie A (Italy)
+        78,   // Bundesliga (Germany)
+        61,   // Ligue 1 (France)
+        94,   // Primeira Liga (Portugal)
+        88,   // Eredivisie (Netherlands)
+        2,    // Champions League
+        3     // Europa League
+    ]
 
-    // Market definition
     struct Market: Identifiable {
         let id = UUID()
         let label: String
@@ -20,29 +33,47 @@ final class PredictViewModel: ObservableObject {
         let category: String
     }
 
+    var filteredMatches: [Match] {
+        
+        return matches.filter { match in
+            // 1. Check League ID
+            let isTopLeague = topLeagueIDs.contains(match.leagueId)
+            
+            // 2. Safe Date Comparison
+            let calendar = Calendar.current
+            let dateFormatter = ISO8601DateFormatter()
+            // This handles the 'T' and timezone offsets in your API response
+            dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            
+            let matchDate = dateFormatter.date(from: match.rawDate) ?? Date()
+            let isSameDay = calendar.isDate(matchDate, inSameDayAs: selectedDate)
+            
+            return isTopLeague && isSameDay
+        }
+        .sorted { m1, m2 in
+            if m1.isLive != m2.isLive {
+                return m1.isLive && !m2.isLive
+            }
+            return m1.rawDate < m2.rawDate
+        }
+    }
+
+    // MARK: - Updated Loading Logic
     func loadMatches() async {
         isLoading = true
         errorMessage = nil
 
         do {
-            let liveMatches = try await APIManager.fetchLiveMatches()
-            self.matches = liveMatches
+            // Fetch the full schedule from your updated APIManager
+            // Ensure APIManager.fetchAllMatches() is implemented to get future games
+            let allMatches = try await APIManager.fetchAllMatches()
+            self.matches = allMatches
         } catch let DecodingError.keyNotFound(key, context) {
-            let msg = "❌ Missing Key: '\(key.stringValue)' - \(context.debugDescription)"
-            print(msg)
+            print("❌ Missing Key: '\(key.stringValue)' - \(context.debugDescription)")
             errorMessage = "Data format error: Missing '\(key.stringValue)'"
         } catch let DecodingError.typeMismatch(type, context) {
-            let msg = "❌ Type Mismatch: expected '\(type)' - \(context.debugDescription)"
-            print(msg)
+            print("❌ Type Mismatch: expected '\(type)' - \(context.debugDescription)")
             errorMessage = "Data format error: Type mismatch"
-        } catch let DecodingError.valueNotFound(type, context) {
-            let msg = "❌ Value Not Found: expected '\(type)' but found null - \(context.debugDescription)"
-            print(msg)
-            errorMessage = "Data format error: Missing value"
-        } catch let DecodingError.dataCorrupted(context) {
-            let msg = "❌ Data Corrupted: \(context.debugDescription)"
-            print(msg)
-            errorMessage = "Data format error: Corrupted data"
         } catch {
             print("❌ General Error: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
@@ -52,7 +83,6 @@ final class PredictViewModel: ObservableObject {
     }
 
     func getMarkets(for match: Match) -> [Market] {
-        // Hardcoded markets for demo; in production, fetch from Supabase
         [
             Market(label: "Home Win", odds: 2.1, category: "match_result"),
             Market(label: "Away Win", odds: 1.9, category: "match_result"),
@@ -72,7 +102,6 @@ final class PredictViewModel: ObservableObject {
         isSubmitting = true
         errorMessage = nil
 
-        // Calculate points (mirrored from web app)
         let confRatio = Double(confidence) / 100.0
         let basePoints = Int(4.0 * market.odds * confRatio)
         let finalWin = max(1, basePoints)

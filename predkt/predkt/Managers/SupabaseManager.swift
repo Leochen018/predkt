@@ -10,56 +10,70 @@ final class SupabaseManager: ObservableObject {
     @Published var user: User?
 
     private let supabaseURL = "https://iffpxhemvquxgstcmnff.supabase.co"
-    // Note: In a production app, move this key to a secure .plist or environment variable
     private let supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmZnB4aGVtdnF1eGdzdGNtbmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NzY4NzAsImV4cCI6MjA5MDQ1Mjg3MH0.LshccWh0u1bLhu2XJVpEAeD2DtLfeUMn0QO2MF27ITg"
 
     private(set) var client: SupabaseClient
-
+    
     private init() {
         self.client = SupabaseClient(
             supabaseURL: URL(string: supabaseURL)!,
-            supabaseKey: supabaseKey
+            supabaseKey: supabaseKey,
+            options: SupabaseClientOptions(
+                auth: .init(
+                    autoRefreshToken: true,
+                    emitLocalSessionAsInitialSession: true
+                )
+            )
         )
+        listenToAuthChanges()
         bootstrapAsync()
+    }
+
+    private func listenToAuthChanges() {
+        Task {
+            for await (event, session) in client.auth.authStateChanges {
+                self.session = session
+                self.user = session?.user
+                print("🔔 Auth Event: \(event)")
+            }
+        }
     }
 
     private func bootstrapAsync() {
         Task {
             do {
-                // Latest Supabase-Swift uses 'session' property for current auth state
                 let currentSession = try await client.auth.session
                 self.session = currentSession
                 self.user = currentSession.user
+                print("✅ Session Loaded: \(currentSession.user.email ?? "Unknown User")")
             } catch {
-                print("No active session found: \(error.localizedDescription)")
+                print("ℹ️ No active session: \(error.localizedDescription)")
             }
         }
     }
 
     func login(email: String, password: String) async throws {
-        // Updated: signIn returns a Session directly in modern versions
         let response = try await client.auth.signIn(email: email, password: password)
         self.session = response
         self.user = response.user
     }
 
     func signup(email: String, password: String, username: String) async throws {
-        let url = URL(string: "https://api.predkt.app/api/signup")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try await client.auth.signUp(
+            email: email,
+            password: password,
+            data: ["username": .string(username)]
+        )
+    }
 
-        let body = [
-            "email": email,
-            "password": password,
-            "username": username
-        ]
-        request.httpBody = try JSONEncoder().encode(body)
-
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw NSError(domain: "Signup failed", code: -1, userInfo: [NSLocalizedDescriptionKey: "Server returned an error during signup."])
-        }
+    func verifyCode(email: String, code: String) async throws {
+        let response = try await client.auth.verifyOTP(
+            email: email,
+            token: code,
+            type: .signup
+        )
+        self.session = response.session
+        self.user = response.user
     }
 
     func logout() async throws {
@@ -72,8 +86,9 @@ final class SupabaseManager: ObservableObject {
         session?.accessToken
     }
 
+    // --- DATA FETCHING ---
+
     func fetchFeed() async throws -> [Pick] {
-        // Modern Supabase-Swift handles decoding directly via .execute().value
         return try await client
             .from("picks")
             .select("*, profiles(username, id)")
@@ -85,7 +100,6 @@ final class SupabaseManager: ObservableObject {
 
     func fetchMyPicks() async throws -> [Pick] {
         guard let userId = user?.id else { throw NSError(domain: "No user", code: -1) }
-
         let today = Calendar.current.startOfDay(for: Date()).toISO8601String()
 
         return try await client
@@ -99,16 +113,19 @@ final class SupabaseManager: ObservableObject {
     }
 
     func fetchUserProfile() async throws -> UserProfile? {
-        guard let userId = user?.id else { return nil }
-
-        return try await client
-            .from("profiles")
-            .select("*")
-            .eq("id", value: userId)
-            .single()
-            .execute()
-            .value
-    }
+            guard let userId = user?.id else { return nil }
+            
+            // We use .execute() instead of .single() to avoid the crash
+            let response = try await client
+                .from("profiles")
+                .select("*")
+                .eq("id", value: userId)
+                .execute()
+            
+            // Decodes as an array and returns the first item if it exists
+            let profiles = try JSONDecoder().decode([UserProfile].self, from: response.data)
+            return profiles.first
+        }
 
     func createPick(
         match: String,
@@ -122,9 +139,8 @@ final class SupabaseManager: ObservableObject {
     ) async throws {
         guard let userId = user?.id else { throw NSError(domain: "No user", code: -1) }
 
-        // Use AnyJSON or a dedicated Pick struct to avoid [String: Any] casting issues
         let pick: [String: AnyJSON] = [
-            "user_id": .string(userId.uuidString),
+            "user_id": .string(userId.uuidString.lowercased()),
             "match": .string(match),
             "market": .string(market),
             "confidence": .integer(confidence),
@@ -143,7 +159,6 @@ final class SupabaseManager: ObservableObject {
     }
 }
 
-// Helper for date filtering
 extension Date {
     func toISO8601String() -> String {
         let formatter = ISO8601DateFormatter()

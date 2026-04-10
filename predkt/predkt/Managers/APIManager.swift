@@ -3,41 +3,51 @@ import Foundation
 struct APIManager {
     static let baseURL = "https://api.predkt.app"
 
+    // 1. Updated to match the nested structure of API-Football
     struct LiveResponse: Codable {
         let liveMatches: [LiveMatchResponse]
-        let error: String?
     }
 
     static func fetchLiveMatches() async throws -> [Match] {
-        let url = URL(string: "\(baseURL)/api/live")!
+        let urlString = "\(baseURL)/api/live"
+        print("DEBUG: Attempting to fetch from: \(urlString)") // Check the URL
         
-        // 1. Fetch the raw data and the response code
+        guard let url = URL(string: urlString) else { throw URLError(.badURL) }
+
+        // Use a simpler data fetch to ensure we see the result even if it's weird
         let (data, response) = try await URLSession.shared.data(from: url)
         
-        // 2. Check if the server actually sent a "Success" (200) code
+        // FORCE PRINT: This bypasses any decoding logic
+        print("--- RAW DATA RECEIVED: \(data.count) bytes ---")
+        if let str = String(data: data, encoding: .utf8) {
+            print("DEBUG_JSON_BODY: \(str)")
+        }
+        
+        // Now check the response code
         if let httpResponse = response as? HTTPURLResponse {
-            print("DEBUG: Status Code: \(httpResponse.statusCode)")
-            
-            if httpResponse.statusCode != 200 {
-                // If the server failed, print what it said
-                let errorText = String(data: data, encoding: .utf8) ?? "No text"
-                print("DEBUG: Server Error Message: \(errorText)")
-            }
+            print("DEBUG: HTTP Status Code: \(httpResponse.statusCode)")
+        }
+        
+        // The app likely crashes right here:
+        let decodedResponse = try JSONDecoder().decode(LiveResponse.self, from: data)
+        return decodedResponse.liveMatches.map { $0.toMatch() }
+    }
+    // 3. Updated to fetch all matches for the calendar
+    static func fetchAllMatches() async throws -> [Match] {
+        guard let url = URL(string: "\(baseURL)/api/matches") else {
+            throw URLError(.badURL)
         }
 
-        // 3. Print the raw JSON to the console so you can see it
-        if let jsonString = String(data: data, encoding: .utf8) {
-            print("DEBUG: Raw JSON from Server: \(jsonString)")
-        }
-
-        // 4. Try to decode it
-        let decoder = JSONDecoder()
-        let decodedResponse = try decoder.decode(LiveResponse.self, from: data)
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let decodedResponse = try JSONDecoder().decode(LiveResponse.self, from: data)
         return decodedResponse.liveMatches.map { $0.toMatch() }
     }
 
     static func verifyEmail(userId: String, token: String) async throws {
-        let url = URL(string: "\(baseURL)/api/verify-email")!
+        guard let url = URL(string: "\(baseURL)/api/verify-email") else {
+            throw URLError(.badURL)
+        }
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

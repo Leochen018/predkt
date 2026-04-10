@@ -1,7 +1,7 @@
 import Foundation
 
-struct Match: Identifiable {
-    let id: String // fixtureId
+struct Match: Identifiable, Codable {
+    let id: String
     let home: String
     let away: String
     let status: String
@@ -11,14 +11,11 @@ struct Match: Identifiable {
     let competition: String
     let isLive: Bool
     let isFinished: Bool
-
-    var displayName: String {
-        "\(home) vs \(away)"
-    }
-
-    var score: String {
-        "\(homeGoals) - \(awayGoals)"
-    }
+    let rawDate: String
+    let leagueId: Int
+    
+    var displayName: String { "\(home) vs \(away)" }
+    var score: String { "\(homeGoals) - \(awayGoals)" }
 }
 
 struct LiveMatchResponse: Codable {
@@ -32,13 +29,19 @@ struct LiveMatchResponse: Codable {
     let competition: String
     let isLive: Bool
     let isFinished: Bool
+    let date: String? // Optional string to prevent "missing key" errors
+    let league_id: Int?
 
     enum CodingKeys: String, CodingKey {
-        case fixtureId, home, away, status, elapsed, homeGoals, awayGoals, competition, isLive, isFinished
+        case fixtureId, home, away, status, elapsed, homeGoals, awayGoals, competition, isLive, isFinished, date
+        case league_id
     }
 
     func toMatch() -> Match {
-        Match(
+        // Fallback if date is missing or malformed
+        let fallbackDate = ISO8601DateFormatter().string(from: Date())
+        
+        return Match(
             id: String(fixtureId),
             home: home,
             away: away,
@@ -48,7 +51,9 @@ struct LiveMatchResponse: Codable {
             awayGoals: awayGoals ?? 0,
             competition: competition,
             isLive: isLive,
-            isFinished: isFinished
+            isFinished: isFinished,
+            rawDate: date ?? fallbackDate,
+            leagueId: league_id ?? 0 
         )
     }
 }

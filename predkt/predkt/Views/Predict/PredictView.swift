@@ -11,7 +11,7 @@ struct PredictView: View {
             Color(red: 0.05, green: 0.05, blue: 0.08).ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Header
+                // MARK: - Header
                 HStack {
                     Text("Predict")
                         .font(.system(size: 18, weight: .bold))
@@ -21,6 +21,27 @@ struct PredictView: View {
                 .padding(16)
                 .background(Color(red: 0.1, green: 0.1, blue: 0.12))
 
+                // MARK: - Horizontal Calendar
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(0..<14) { i in
+                            let date = Calendar.current.date(byAdding: .day, value: i, to: Date()) ?? Date()
+                            DateItemView(
+                                date: date,
+                                isSelected: Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate)
+                            ) {
+                                viewModel.selectedDate = date
+                                // FIX 1: Activated the API call when a new date is tapped
+                                Task { await viewModel.loadMatches() }
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 12)
+                }
+                .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+
+                // MARK: - Match List Logic
                 if viewModel.isLoading {
                     VStack {
                         Spacer()
@@ -40,7 +61,8 @@ struct PredictView: View {
                 } else {
                     ScrollView {
                         VStack(spacing: 12) {
-                            ForEach(viewModel.matches) { match in
+                            // FIX 2: Explicitly identifying matches by their unique ID to prevent SwiftUI from hiding matches with duplicate/missing data
+                            ForEach(viewModel.filteredMatches, id: \.id) { match in
                                 Button(action: {
                                     selectedMatch = match
                                     showingMarketSheet = true
@@ -76,8 +98,24 @@ struct PredictView: View {
                                     .cornerRadius(10)
                                     .padding(.horizontal, 16)
                                 }
-                                .buttonStyle(PlainButtonStyle()) // Keeps text colors intact
+                                .buttonStyle(PlainButtonStyle())
                             }
+                            
+                            // Empty State Logic
+                            if viewModel.filteredMatches.isEmpty {
+                                VStack(spacing: 12) {
+                                    Image(systemName: "sportscourt")
+                                        .font(.system(size: 40))
+                                        .foregroundStyle(.gray.opacity(0.3))
+                                    Text("No matches scheduled for the Top 7 Leagues today.")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.gray)
+                                        .multilineTextAlignment(.center)
+                                }
+                                .padding(.top, 100)
+                                .padding(.horizontal, 40)
+                            }
+                            
                             Spacer().frame(height: 20)
                         }
                         .padding(.vertical, 12)
@@ -96,26 +134,46 @@ struct PredictView: View {
                     myPicksCount: myPicksCount,
                     isPresented: $showingMarketSheet
                 )
-                .presentationDetents([.medium, .large]) // Allows for a better half-sheet feel
+                .presentationDetents([.medium, .large])
             }
         }
     }
 }
 
+// MARK: - Support View: Date Button
+struct DateItemView: View {
+    let date: Date
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Text(date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
+                    .font(.system(size: 10, weight: .bold))
+                Text(date.formatted(.dateTime.day()))
+                    .font(.system(size: 16, weight: .bold))
+            }
+            .foregroundStyle(isSelected ? .white : .gray)
+            .frame(width: 50, height: 65)
+            .background(isSelected ? Color(red: 0.42, green: 0.39, blue: 1.0) : Color(red: 0.15, green: 0.15, blue: 0.18))
+            .cornerRadius(12)
+        }
+    }
+}
+
+// MARK: - Market Sheet View
 struct MarketSheetView: View {
     let match: Match
     let viewModel: PredictViewModel
     let myPicksCount: Int
     @Binding var isPresented: Bool
-
     @State private var selectedMarket: PredictViewModel.Market?
 
     var body: some View {
         ZStack {
             Color(red: 0.05, green: 0.05, blue: 0.08).ignoresSafeArea()
-
             VStack(spacing: 16) {
-                // Header
                 HStack {
                     Text(match.displayName)
                         .font(.system(size: 16, weight: .bold))
@@ -129,7 +187,6 @@ struct MarketSheetView: View {
                 }
                 .padding(16)
 
-                // Markets List
                 ScrollView {
                     VStack(spacing: 8) {
                         ForEach(viewModel.getMarkets(for: match)) { market in
@@ -138,20 +195,18 @@ struct MarketSheetView: View {
                                     Text(market.label)
                                         .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(.white)
-                                    
                                     Spacer()
-                                    
                                     Text(String(format: "%.2f", market.odds))
                                         .font(.system(size: 14, weight: .bold))
                                         .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
                                 }
                                 .padding(14)
                                 .background(selectedMarket?.id == market.id ? Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.15) : Color(red: 0.1, green: 0.1, blue: 0.12))
+                                .cornerRadius(8)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
                                         .stroke(selectedMarket?.id == market.id ? Color(red: 0.42, green: 0.39, blue: 1.0) : .clear, lineWidth: 1)
                                 )
-                                .cornerRadius(8)
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
@@ -159,7 +214,6 @@ struct MarketSheetView: View {
                     .padding(.horizontal, 16)
                 }
 
-                // Interaction Area (Slider & Submit)
                 if let market = selectedMarket {
                     VStack(spacing: 16) {
                         HStack {
@@ -171,59 +225,32 @@ struct MarketSheetView: View {
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(.white)
                         }
-
-                        Slider(value: Binding(
-                            get: { Double(viewModel.confidence) },
-                            set: { viewModel.confidence = Int($0) }
-                        ), in: 1...100)
-                        .tint(Color(red: 0.42, green: 0.39, blue: 1.0))
+                        Slider(value: Binding(get: { Double(viewModel.confidence) }, set: { viewModel.confidence = Int($0) }), in: 1...100)
+                            .tint(Color(red: 0.42, green: 0.39, blue: 1.0))
 
                         Button(action: {
                             Task {
-                                let success = await viewModel.submitPick(
-                                    market: market,
-                                    match: match,
-                                    myPicksCount: myPicksCount
-                                )
+                                let success = await viewModel.submitPick(market: market, match: match, myPicksCount: myPicksCount)
                                 if success { isPresented = false }
                             }
                         }) {
                             Group {
-                                if viewModel.isSubmitting {
-                                    ProgressView()
-                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                } else {
-                                    Text("Submit Pick")
-                                        .font(.system(size: 15, weight: .bold))
-                                }
+                                if viewModel.isSubmitting { ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white)) }
+                                else { Text("Submit Pick").font(.system(size: 15, weight: .bold)) }
                             }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 50)
+                            .frame(maxWidth: .infinity).frame(height: 50)
                             .background(Color(red: 0.42, green: 0.39, blue: 1.0))
-                            .foregroundStyle(.white)
-                            .cornerRadius(12)
+                            .foregroundStyle(.white).cornerRadius(12)
                         }
                         .disabled(viewModel.isSubmitting)
-
-                        if let error = viewModel.errorMessage {
-                            Text(error)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                        }
                     }
                     .padding(20)
                     .background(Color(red: 0.1, green: 0.1, blue: 0.12))
                     .cornerRadius(16)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
                 }
-                
                 Spacer()
             }
         }
     }
-}
-
-#Preview {
-    PredictView()
 }

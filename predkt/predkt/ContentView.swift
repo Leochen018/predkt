@@ -1,24 +1,18 @@
-//
-//  ContentView.swift
-//  predkt
-//
-//  Created by Leo Chen on 07/04/2026.
-//
-
 import SwiftUI
-
+import Combine
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-    }
-}
+    @EnvironmentObject var supabaseManager: SupabaseManager
 
-#Preview {
-    ContentView()
+    var body: some View {
+        Group {
+            // This is the critical check
+            if supabaseManager.session != nil {
+                MainTabView()
+            } else {
+                AuthView() // This should show if session is missing
+            }
+        }
+        // This ensures the screen swaps immediately when logout is pressed
+        .animation(.default, value: supabaseManager.session == nil)
+    }
 }
