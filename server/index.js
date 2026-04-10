@@ -135,7 +135,11 @@ app.get("/api/matches", async (req, res) => {
   try {
     const today = new Date().toISOString().split("T")[0];
     const next7 = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
-    const season = new Date().getFullYear();
+    const now = new Date();
+    const season = now.getMonth() < 7 ? now.getFullYear() - 1 : now.getFullYear();
+
+
+    console.log(`🔍 Fetching matches: season=${season}, from=${today}, to=${next7}`);
 
     // Fetch all top leagues in parallel
     const leagueRequests = TOP_LEAGUE_IDS.map(leagueId =>
@@ -144,6 +148,9 @@ app.get("/api/matches", async (req, res) => {
 
     const results = await Promise.all(leagueRequests);
     const allFixtures = results.flat();
+
+
+    console.log(`✅ Total fixtures found: ${allFixtures.length}`); // 👈 check Railway logs
 
     // Deduplicate by fixtureId
     const seen = new Set();
