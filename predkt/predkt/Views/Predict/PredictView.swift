@@ -5,22 +5,7 @@ struct PredictView: View {
     @State private var showingQuestions = false
     @State private var selectedMatch: Match?
     @State private var myPicksCount = 0
-
-    // Group matches by competition, preserving order of first appearance
-    var matchesByLeague: [(league: String, matches: [Match])] {
-        var order: [String] = []
-        var groups: [String: [Match]] = [:]
-        for match in viewModel.filteredMatches {
-            if groups[match.competition] == nil {
-                order.append(match.competition)
-                groups[match.competition] = []
-            }
-            groups[match.competition]!.append(match)
-        }
-        return order.map { league in
-            (league: league, matches: groups[league]!.sorted { $0.rawDate < $1.rawDate })
-        }
-    }
+    @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -37,31 +22,48 @@ struct PredictView: View {
                             .font(.system(size: 20, weight: .black)).foregroundStyle(.white)
                     }
                     Spacer()
-                    if !viewModel.matches.isEmpty {
-                        Button(action: { Task { await viewModel.refreshMatches() } }) {
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundStyle(Color.predktMuted)
-                                .font(.system(size: 15))
-                        }
+                    Button(action: { Task { await viewModel.refreshMatches() } }) {
+                        Image(systemName: "arrow.clockwise")
+                            .foregroundStyle(Color.predktMuted).font(.system(size: 15))
                     }
                 }
                 .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
 
-                // Date carousel
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(0..<60) { i in
-                            let date = Calendar.current.date(byAdding: .day, value: i, to: Date()) ?? Date()
-                            GameDateChip(
-                                date: date,
-                                isSelected: Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate),
-                                action: { viewModel.selectedDate = date }
-                            )
+                // Date carousel — scrolls to selected date
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(0..<60) { i in
+                                let date = Calendar.current.date(byAdding: .day, value: i, to: Date()) ?? Date()
+                                GameDateChip(
+                                    date: date,
+                                    isSelected: Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate),
+                                    action: { viewModel.selectedDate = date }
+                                )
+                                .id(i)
+                            }
                         }
+                        .padding(.horizontal, 20).padding(.vertical, 10)
                     }
-                    .padding(.horizontal, 20).padding(.vertical, 10)
+                    .onChange(of: viewModel.selectedDate) { _ in
+                        // Scroll carousel to keep selected date in view
+                        let days = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: Calendar.current.startOfDay(for: viewModel.selectedDate)).day ?? 0
+                        withAnimation { proxy.scrollTo(max(0, days), anchor: .center) }
+                    }
                 }
                 .background(Color.predktCard.opacity(0.5))
+
+                // Swipe hint
+                if !viewModel.matches.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left").font(.system(size: 9))
+                        Text("SWIPE TO CHANGE DAY")
+                            .font(.system(size: 9, weight: .bold)).kerning(1)
+                        Image(systemName: "chevron.right").font(.system(size: 9))
+                    }
+                    .foregroundStyle(Color.predktMuted.opacity(0.5))
+                    .padding(.vertical, 4)
+                }
 
                 if viewModel.isLoading {
                     Spacer()
@@ -72,40 +74,65 @@ struct PredictView: View {
                     Spacer()
                 } else if let error = viewModel.errorMessage {
                     Spacer()
-                    Text(error).foregroundStyle(Color.predktCoral).padding(20).multilineTextAlignment(.center)
+                    VStack(spacing: 16) {
+                        Text("⚠️").font(.system(size: 40))
+                        Text(error).foregroundStyle(Color.predktCoral).multilineTextAlignment(.center)
+                        Button(action: { Task { await viewModel.refreshMatches() } }) {
+                            Text("Try Again")
+                                .font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                                .padding(.horizontal, 24).padding(.vertical, 10)
+                                .background(Color.predktLime).cornerRadius(12)
+                        }
+                    }
+                    .padding(20)
                     Spacer()
                 } else {
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: 0) {
-                            if matchesByLeague.isEmpty {
-                                EmptyMatchesCard()
-                            } else {
-                                // Total count
-                                HStack {
-                                    Text("\(viewModel.filteredMatches.count) CHALLENGES · \(matchesByLeague.count) COMPETITIONS")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundStyle(Color.predktMuted).kerning(1)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
+                    // ✅ Swipeable match list
+                    ZStack {
+                        if viewModel.matchesByLeague.isEmpty {
+                            EmptyMatchesCard(onNext: { viewModel.goToNextDay() })
+                        } else {
+                            ScrollView(showsIndicators: false) {
+                                VStack(spacing: 0) {
+                                    // Summary
+                                    HStack {
+                                        Text("\(viewModel.filteredMatches.count) MATCHES · \(viewModel.matchesByLeague.count) COMPETITIONS")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(Color.predktMuted).kerning(1)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
 
-                                // ✅ Grouped by league
-                                ForEach(matchesByLeague, id: \.league) { group in
-                                    LeagueSection(
-                                        league: group.league,
-                                        matches: group.matches,
-                                        onSelect: { match in
-                                            viewModel.clearAnswers()
-                                            selectedMatch = match
-                                            showingQuestions = true
-                                        }
-                                    )
+                                    ForEach(viewModel.matchesByLeague, id: \.league) { group in
+                                        LeagueSection(
+                                            league: group.league,
+                                            matches: group.matches,
+                                            onSelect: { match in
+                                                viewModel.clearAnswers()
+                                                selectedMatch = match
+                                                showingQuestions = true
+                                            }
+                                        )
+                                    }
+                                    Spacer().frame(height: 50)
                                 }
                             }
-                            Spacer().frame(height: 40)
                         }
-                        .padding(.bottom, 8)
                     }
+                    // ✅ Swipe gesture — left = next day, right = previous day
+                    .gesture(
+                        DragGesture(minimumDistance: 40, coordinateSpace: .local)
+                            .onEnded { value in
+                                let horizontal = value.translation.width
+                                let vertical   = abs(value.translation.height)
+                                // Only trigger if mostly horizontal
+                                guard abs(horizontal) > vertical else { return }
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    if horizontal < -40 { viewModel.goToNextDay() }
+                                    else if horizontal > 40 { viewModel.goToPreviousDay() }
+                                }
+                            }
+                    )
                 }
             }
         }
@@ -133,31 +160,18 @@ struct LeagueSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // League header
             Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
                 HStack(spacing: 10) {
-                    Rectangle()
-                        .fill(Color.predktLime)
-                        .frame(width: 3, height: 16)
-                        .cornerRadius(2)
-
+                    Rectangle().fill(Color.predktLime).frame(width: 3, height: 16).cornerRadius(2)
                     Text(league.uppercased())
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundStyle(.white)
-                        .kerning(0.5)
-
+                        .font(.system(size: 11, weight: .black)).foregroundStyle(.white).kerning(0.5)
                     Spacer()
-
                     Text("\(matches.count)")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Color.predktLime)
+                        .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
                         .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Color.predktLime.opacity(0.12))
-                        .cornerRadius(6)
-
+                        .background(Color.predktLime.opacity(0.12)).cornerRadius(6)
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Color.predktMuted)
+                        .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
                 .padding(.horizontal, 20).padding(.vertical, 12)
                 .background(Color.predktCard.opacity(0.4))
@@ -173,7 +187,7 @@ struct LeagueSection: View {
                         .buttonStyle(PlainButtonStyle())
                     }
                 }
-                .background(Color.predktCard.opacity(0.2))
+                .background(Color.predktBg)
             }
 
             Divider().background(Color.predktBorder)
@@ -181,76 +195,55 @@ struct LeagueSection: View {
     }
 }
 
-// MARK: - Match Row (compact, inside league section)
+// MARK: - Match Row
 
 struct MatchRow: View {
     let match: Match
 
     var body: some View {
         HStack(spacing: 0) {
-            // Time / status
+            // Time
             VStack(spacing: 2) {
                 if match.isLive {
                     HStack(spacing: 3) {
                         Circle().fill(Color.predktCoral).frame(width: 5, height: 5)
                         Text(match.elapsed.map { "\($0)'" } ?? "LIVE")
-                            .font(.system(size: 9, weight: .black))
-                            .foregroundStyle(Color.predktCoral)
+                            .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktCoral)
                     }
                 } else if match.isFinished {
-                    Text("FT")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Color.predktMuted)
+                    Text("FT").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted)
                 } else {
                     Text(match.kickoffTime)
-                        .font(.system(size: 13, weight: .black))
-                        .foregroundStyle(Color.predktLime)
+                        .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktLime)
                 }
             }
             .frame(width: 52)
 
-            // Divider
             Rectangle().fill(Color.predktBorder).frame(width: 1, height: 44)
 
-            // Teams
             HStack(spacing: 0) {
-                // Home
                 HStack(spacing: 8) {
                     TeamBadgeView(url: match.homeLogo).frame(width: 22, height: 22)
-                    Text(match.home)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white).lineLimit(1)
+                    Text(match.home).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                // Score or VS
                 if match.isLive || match.isFinished {
-                    Text(match.score)
-                        .font(.system(size: 14, weight: .black)).foregroundStyle(.white)
-                        .frame(width: 52)
+                    Text(match.score).font(.system(size: 14, weight: .black)).foregroundStyle(.white).frame(width: 52)
                 } else {
-                    Text("vs")
-                        .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
-                        .frame(width: 52)
+                    Text("vs").font(.system(size: 11)).foregroundStyle(Color.predktMuted).frame(width: 52)
                 }
 
-                // Away
                 HStack(spacing: 8) {
-                    Text(match.away)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white).lineLimit(1)
-                        .multilineTextAlignment(.trailing)
+                    Text(match.away).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1).multilineTextAlignment(.trailing)
                     TeamBadgeView(url: match.awayLogo).frame(width: 22, height: 22)
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 14)
 
-            // Play arrow
             Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(Color.predktMuted)
-                .frame(width: 32)
+                .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).frame(width: 32)
         }
         .frame(height: 56)
         .background(Color.predktBg)
@@ -271,16 +264,12 @@ struct QuestionsSheetView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.predktBg.ignoresSafeArea()
-
             VStack(spacing: 0) {
-                // Match header
                 VStack(spacing: 12) {
                     HStack {
                         Button(action: { isPresented = false }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(Color.predktMuted)
-                                .padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
+                            Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.predktMuted).padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
                         }
                         Spacer()
                         if match.isLive {
@@ -296,16 +285,12 @@ struct QuestionsSheetView: View {
                     HStack(spacing: 16) {
                         TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
                         VStack(spacing: 2) {
-                            Text(match.displayName)
-                                .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
-                                .multilineTextAlignment(.center)
+                            Text(match.displayName).font(.system(size: 15, weight: .black)).foregroundStyle(.white).multilineTextAlignment(.center)
                             HStack(spacing: 6) {
-                                Text(match.competition)
-                                    .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                                Text(match.competition).font(.system(size: 11)).foregroundStyle(Color.predktMuted)
                                 if !match.isLive, !match.isFinished {
                                     Text("·").foregroundStyle(Color.predktMuted)
-                                    Text("\(match.matchDate) · \(match.kickoffTime)")
-                                        .font(.system(size: 11)).foregroundStyle(Color.predktLime)
+                                    Text("\(match.matchDate) · \(match.kickoffTime)").font(.system(size: 11)).foregroundStyle(Color.predktLime)
                                 }
                             }
                         }
@@ -317,8 +302,7 @@ struct QuestionsSheetView: View {
                         LockedAnswersBanner(viewModel: viewModel).padding(.horizontal, 20)
                     }
                 }
-                .background(Color.predktCard)
-                .padding(.bottom, 1)
+                .background(Color.predktCard).padding(.bottom, 1)
 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 20) {
@@ -331,7 +315,6 @@ struct QuestionsSheetView: View {
                 }
             }
 
-            // Floating Lock In
             if !viewModel.lockedAnswers.isEmpty {
                 VStack(spacing: 0) {
                     LinearGradient(colors: [Color.predktBg.opacity(0), Color.predktBg], startPoint: .top, endPoint: .bottom).frame(height: 24)
@@ -358,8 +341,7 @@ struct QuestionsSheetView: View {
                                 }
                             }
                         }
-                        .padding(.horizontal, 24).frame(height: 62)
-                        .background(Color.predktLime)
+                        .padding(.horizontal, 24).frame(height: 62).background(Color.predktLime)
                     }
                     .disabled(viewModel.isSubmitting)
                 }
@@ -381,22 +363,17 @@ struct QuestionCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: { withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() } }) {
                 HStack(spacing: 8) {
-                    Text(question.category)
-                        .font(.system(size: 10, weight: .black))
-                        .foregroundStyle(Color.predktLime).kerning(1.5)
+                    Text(question.category).font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktLime).kerning(1.5)
                     Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 10)
             }
             .buttonStyle(PlainButtonStyle())
 
             if isExpanded {
-                Text(question.prompt)
-                    .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+                Text(question.prompt).font(.system(size: 18, weight: .black)).foregroundStyle(.white)
                     .padding(.horizontal, 16).padding(.bottom, 14)
-
                 VStack(spacing: 8) {
                     ForEach(question.answers) { answer in
                         AnswerPollRow(answer: answer, viewModel: viewModel)
@@ -405,8 +382,7 @@ struct QuestionCard: View {
                 .padding(.horizontal, 16).padding(.bottom, 16)
             }
         }
-        .background(Color.predktCard)
-        .cornerRadius(18)
+        .background(Color.predktCard).cornerRadius(18)
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.predktBorder, lineWidth: 1))
     }
 }
@@ -419,7 +395,6 @@ struct AnswerPollRow: View {
 
     var isLocked: Bool     { viewModel.isLocked(answer) }
     var isConflicted: Bool { viewModel.conflicts(answer) }
-
     var xpColour: Color {
         switch answer.probability {
         case 0..<30:  return Color.predktCoral
@@ -442,16 +417,12 @@ struct AnswerPollRow: View {
                         Circle().stroke(isLocked ? Color.predktLime : Color.white.opacity(0.15), lineWidth: 2).frame(width: 22, height: 22)
                         if isLocked { Circle().fill(Color.predktLime).frame(width: 14, height: 14) }
                     }
-                    Text(answer.label)
-                        .font(.system(size: 14, weight: isLocked ? .bold : .medium))
-                        .foregroundStyle(isLocked ? .white : isConflicted ? Color.predktMuted.opacity(0.4) : Color.predktMuted)
-                        .lineLimit(2)
+                    Text(answer.label).font(.system(size: 14, weight: isLocked ? .bold : .medium))
+                        .foregroundStyle(isLocked ? .white : isConflicted ? Color.predktMuted.opacity(0.4) : Color.predktMuted).lineLimit(2)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black))
-                            .foregroundStyle(isLocked ? Color.predktLime : xpColour)
-                        Text(answer.probabilityDisplay).font(.system(size: 10))
-                            .foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
+                        Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black)).foregroundStyle(isLocked ? Color.predktLime : xpColour)
+                        Text(answer.probabilityDisplay).font(.system(size: 10)).foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
                     }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 14)
@@ -461,8 +432,7 @@ struct AnswerPollRow: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(isLocked ? Color.predktLime.opacity(0.5) : Color.predktBorder, lineWidth: 1)))
             .opacity(isConflicted ? 0.35 : 1.0)
         }
-        .buttonStyle(PlainButtonStyle())
-        .disabled(isConflicted)
+        .buttonStyle(PlainButtonStyle()).disabled(isConflicted)
     }
 }
 
@@ -470,7 +440,6 @@ struct AnswerPollRow: View {
 
 struct LockedAnswersBanner: View {
     @ObservedObject var viewModel: PredictViewModel
-
     var body: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -479,10 +448,8 @@ struct LockedAnswersBanner: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(viewModel.lockedAnswers) { answer in
-                            Text(answer.shortLabel)
-                                .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(Color.predktLime.opacity(0.15)).cornerRadius(6)
+                            Text(answer.shortLabel).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                                .padding(.horizontal, 8).padding(.vertical, 4).background(Color.predktLime.opacity(0.15)).cornerRadius(6)
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.predktLime.opacity(0.3), lineWidth: 1))
                         }
                     }
@@ -494,9 +461,7 @@ struct LockedAnswersBanner: View {
                 Text("XP").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.7))
             }
         }
-        .padding(12)
-        .background(Color.predktLime.opacity(0.07))
-        .cornerRadius(12)
+        .padding(12).background(Color.predktLime.opacity(0.07)).cornerRadius(12)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.predktLime.opacity(0.2), lineWidth: 1))
         .padding(.bottom, 12)
     }
@@ -530,13 +495,23 @@ struct GameDateChip: View {
 // MARK: - Empty State
 
 struct EmptyMatchesCard: View {
+    let onNext: () -> Void
     var body: some View {
         VStack(spacing: 16) {
             Text("🏟️").font(.system(size: 48))
-            Text("No challenges today")
+            Text("No matches today")
                 .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
-            Text("Check another date or follow more leagues in your interests.")
+            Text("Swipe left or tap below to check the next day")
                 .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
+            Button(action: onNext) {
+                HStack(spacing: 6) {
+                    Text("Next Day")
+                        .font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
+                }
+                .padding(.horizontal, 24).padding(.vertical, 12)
+                .background(Color.predktLime).cornerRadius(12)
+            }
         }
         .padding(40).frame(maxWidth: .infinity)
         .background(Color.predktCard).cornerRadius(20)
