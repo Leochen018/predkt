@@ -34,13 +34,25 @@ struct APIManager {
     }
     // 3. Updated to fetch all matches for the calendar
     static func fetchAllMatches() async throws -> [Match] {
-        guard let url = URL(string: "\(baseURL)/api/matches") else {
-            throw URLError(.badURL)
+        guard let url = URL(string: "\(baseURL)/api/matches") else { throw URLError(.badURL) }
+
+        // ✅ Increase timeout to 60 seconds — first cache build takes time
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 120
+        let session = URLSession(configuration: config)
+
+        let (data, response) = try await session.data(from: url)
+
+        if let httpResponse = response as? HTTPURLResponse {
+            print("DEBUG: HTTP Status: \(httpResponse.statusCode)")
+        }
+        if let str = String(data: data, encoding: .utf8) {
+            print("DEBUG_MATCHES: \(str.prefix(500))")
         }
 
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let decodedResponse = try JSONDecoder().decode(LiveResponse.self, from: data)
-        return decodedResponse.liveMatches.map { $0.toMatch() }
+        let decoded = try JSONDecoder().decode(LiveResponse.self, from: data)
+        return decoded.liveMatches.map { $0.toMatch() }
     }
 
     static func verifyEmail(userId: String, token: String) async throws {

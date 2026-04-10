@@ -380,7 +380,13 @@ final class PredictViewModel: ObservableObject {
         catch { errorMessage = error.localizedDescription }
         isLoading = false
     }
-    func refreshMatches() async { matchesLoaded = false; matches = []; await loadMatches() }
+    func refreshMatches() async {
+        matchesLoaded = false
+        matches = []
+        isLoading = true      // ✅ show loading immediately
+        errorMessage = nil
+        await loadMatches()
+    }
 
     func submitPlays(match: Match, myPicksCount: Int) async -> Bool {
         guard !lockedAnswers.isEmpty else { errorMessage = "Lock in at least one answer"; return false }
