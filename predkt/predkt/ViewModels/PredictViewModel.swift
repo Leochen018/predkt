@@ -11,17 +11,17 @@ final class PredictViewModel: ObservableObject {
     @Published var selectedMatch: Match?
     @Published var isSubmitting = false
 
+    private var matchesLoaded = false
     private let supabaseManager = SupabaseManager.shared
-    
-    // The definitive IDs for the Top 7 + European Cups
+
     private let topLeagueIDs = [
-        39,   // Premier League (England)
-        140,  // La Liga (Spain)
-        135,  // Serie A (Italy)
-        78,   // Bundesliga (Germany)
-        61,   // Ligue 1 (France)
-        94,   // Primeira Liga (Portugal)
-        88,   // Eredivisie (Netherlands)
+        39,   // Premier League
+        140,  // La Liga
+        135,  // Serie A
+        78,   // Bundesliga
+        61,   // Ligue 1
+        94,   // Primeira Liga
+        88,   // Eredivisie
         2,    // Champions League
         3     // Europa League
     ]
@@ -33,41 +33,52 @@ final class PredictViewModel: ObservableObject {
         let category: String
     }
 
+    // MARK: - Date Parsing
+
+    private func parseDate(_ raw: String) -> Date {
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = withFractional.date(from: raw) { return d }
+
+        let withoutFractional = ISO8601DateFormatter()
+        withoutFractional.formatOptions = [.withInternetDateTime]
+        if let d = withoutFractional.date(from: raw) { return d }
+
+        print("⚠️ Failed to parse date: \(raw)")
+        return Date()
+    }
+
+    // MARK: - Filtering
+
     var filteredMatches: [Match] {
-        
+        let calendar = Calendar.current
+
         return matches.filter { match in
-            // 1. Check League ID
             let isTopLeague = topLeagueIDs.contains(match.leagueId)
-            
-            // 2. Safe Date Comparison
-            let calendar = Calendar.current
-            let dateFormatter = ISO8601DateFormatter()
-            // This handles the 'T' and timezone offsets in your API response
-            dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            
-            let matchDate = dateFormatter.date(from: match.rawDate) ?? Date()
+            let matchDate = parseDate(match.rawDate)
             let isSameDay = calendar.isDate(matchDate, inSameDayAs: selectedDate)
-            
             return isTopLeague && isSameDay
         }
         .sorted { m1, m2 in
-            if m1.isLive != m2.isLive {
-                return m1.isLive && !m2.isLive
-            }
+            if m1.isLive != m2.isLive { return m1.isLive }
             return m1.rawDate < m2.rawDate
         }
     }
 
-    // MARK: - Updated Loading Logic
+    // MARK: - Loading
+
     func loadMatches() async {
+        // Only fetch from network once per session; date changes re-filter locally
+        guard !matchesLoaded else { return }
+
         isLoading = true
         errorMessage = nil
 
         do {
-            // Fetch the full schedule from your updated APIManager
-            // Ensure APIManager.fetchAllMatches() is implemented to get future games
             let allMatches = try await APIManager.fetchAllMatches()
             self.matches = allMatches
+            self.matchesLoaded = true
+            print("✅ Loaded \(allMatches.count) matches")
         } catch let DecodingError.keyNotFound(key, context) {
             print("❌ Missing Key: '\(key.stringValue)' - \(context.debugDescription)")
             errorMessage = "Data format error: Missing '\(key.stringValue)'"
@@ -82,16 +93,26 @@ final class PredictViewModel: ObservableObject {
         isLoading = false
     }
 
+    // Force a fresh fetch (e.g. pull to refresh)
+    func refreshMatches() async {
+        matchesLoaded = false
+        await loadMatches()
+    }
+
+    // MARK: - Markets
+
     func getMarkets(for match: Match) -> [Market] {
         [
-            Market(label: "Home Win", odds: 2.1, category: "match_result"),
-            Market(label: "Away Win", odds: 1.9, category: "match_result"),
-            Market(label: "Draw", odds: 3.2, category: "match_result"),
+            Market(label: "Home Win",       odds: 2.1, category: "match_result"),
+            Market(label: "Away Win",       odds: 1.9, category: "match_result"),
+            Market(label: "Draw",           odds: 3.2, category: "match_result"),
             Market(label: "Over 2.5 Goals", odds: 1.8, category: "goals"),
-            Market(label: "Under 2.5 Goals", odds: 2.0, category: "goals"),
-            Market(label: "Both Score", odds: 2.3, category: "both_score")
+            Market(label: "Under 2.5 Goals",odds: 2.0, category: "goals"),
+            Market(label: "Both Score",     odds: 2.3, category: "both_score")
         ]
     }
+
+    // MARK: - Submit Pick
 
     func submitPick(market: Market, match: Match, myPicksCount: Int) async -> Bool {
         guard myPicksCount < 5 else {
@@ -102,10 +123,10 @@ final class PredictViewModel: ObservableObject {
         isSubmitting = true
         errorMessage = nil
 
-        let confRatio = Double(confidence) / 100.0
+        let confRatio  = Double(confidence) / 100.0
         let basePoints = Int(4.0 * market.odds * confRatio)
-        let finalWin = max(1, basePoints)
-        let finalLoss = max(1, Int(4.0 * market.odds * confRatio * 0.5))
+        let finalWin   = max(1, basePoints)
+        let finalLoss  = max(1, Int(4.0 * market.odds * confRatio * 0.5))
 
         do {
             try await supabaseManager.createPick(

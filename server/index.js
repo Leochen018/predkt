@@ -107,12 +107,15 @@ function mapFixture(f) {
     homeGoals:   f.goals.home ?? 0,
     awayGoals:   f.goals.away ?? 0,
     competition: f.league.name,
-    league_id:   f.league.id,      // ✅ FIX: Swift uses this to filter top leagues
-    date:        f.fixture.date,   // ✅ FIX: Swift uses this for date picker filtering
+    league_id:   f.league.id,
+    date:        f.fixture.date,
+    homeLogo:    f.teams.home.logo,   // ✅ NEW: badge URL e.g. https://media.api-sports.io/football/teams/40.png
+    awayLogo:    f.teams.away.logo,   // ✅ NEW: badge URL
     isLive:      LIVE_STATUSES.includes(f.fixture.status.short),
     isFinished:  FINISH_STATUSES.includes(f.fixture.status.short),
   };
 }
+ 
 
 // --- 5. API ROUTES ---
 
