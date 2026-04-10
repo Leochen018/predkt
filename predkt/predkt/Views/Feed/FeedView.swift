@@ -8,24 +8,17 @@ struct FeedView: View {
     var body: some View {
         ZStack {
             Color.predktBg.ignoresSafeArea()
-
             VStack(spacing: 0) {
                 // Header
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("ARENA")
-                            .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktMuted).kerning(2)
-                        Text("Community plays")
-                            .font(.system(size: 20, weight: .black)).foregroundStyle(.white)
+                        Text("ARENA").font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktMuted).kerning(2)
+                        Text("Community plays").font(.system(size: 20, weight: .black)).foregroundStyle(.white)
                     }
                     Spacer()
                     Button(action: { viewModel.showInterestsPicker = true }) {
-                        Image(systemName: "slider.horizontal.3")
-                            .foregroundStyle(Color.predktLime)
-                            .font(.system(size: 16))
-                            .padding(10)
-                            .background(Color.predktLime.opacity(0.12))
-                            .cornerRadius(10)
+                        Image(systemName: "slider.horizontal.3").foregroundStyle(Color.predktLime).font(.system(size: 16))
+                            .padding(10).background(Color.predktLime.opacity(0.12)).cornerRadius(10)
                     }
                 }
                 .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
@@ -35,19 +28,15 @@ struct FeedView: View {
                     ForEach(Array(tabs.enumerated()), id: \.offset) { i, tab in
                         Button(action: { withAnimation { selectedTab = i } }) {
                             VStack(spacing: 6) {
-                                Text(tab)
-                                    .font(.system(size: 13, weight: selectedTab == i ? .bold : .medium))
+                                Text(tab).font(.system(size: 13, weight: selectedTab == i ? .bold : .medium))
                                     .foregroundStyle(selectedTab == i ? .white : Color.predktMuted)
-                                Rectangle()
-                                    .fill(selectedTab == i ? Color.predktLime : .clear)
-                                    .frame(height: 2).cornerRadius(1)
+                                Rectangle().fill(selectedTab == i ? Color.predktLime : .clear).frame(height: 2).cornerRadius(1)
                             }
                         }
                         .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.horizontal, 16)
-                .background(Color.predktCard.opacity(0.6))
+                .padding(.horizontal, 16).background(Color.predktCard.opacity(0.6))
 
                 if viewModel.isLoading {
                     Spacer()
@@ -75,15 +64,28 @@ struct FeedView: View {
 struct ForYouFeed: View {
     @ObservedObject var viewModel: FeedViewModel
 
+    // Group picks by match name
+    var groupedPicks: [(match: String, picks: [Pick])] {
+        var groups: [(match: String, picks: [Pick])] = []
+        var seen: [String: Int] = [:]
+        for pick in viewModel.feedPicks {
+            if let idx = seen[pick.match] {
+                groups[idx].picks.append(pick)
+            } else {
+                seen[pick.match] = groups.count
+                groups.append((match: pick.match, picks: [pick]))
+            }
+        }
+        return groups
+    }
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
-                // Interests prompt
                 if viewModel.followedLeagueIds.isEmpty && viewModel.followedTeamNames.isEmpty {
                     ArenaInterestsPrompt(onTap: { viewModel.showInterestsPicker = true })
                 }
 
-                // Suggested matches section
                 if !viewModel.suggestedMatches.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -98,31 +100,142 @@ struct ForYouFeed: View {
                     .padding(.horizontal, 16)
                 }
 
-                // Divider
                 if !viewModel.feedPicks.isEmpty {
                     HStack {
                         Rectangle().fill(Color.predktBorder).frame(height: 1)
-                        Text("COMMUNITY PLAYS")
-                            .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktMuted).kerning(2)
-                            .fixedSize()
+                        Text("COMMUNITY PLAYS").font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktMuted).kerning(2).fixedSize()
                         Rectangle().fill(Color.predktBorder).frame(height: 1)
                     }
                     .padding(.horizontal, 16)
-                }
 
-                // Community picks
-                ForEach(viewModel.feedPicks) { pick in
-                    ArenaPickCard(pick: pick)
-                        .padding(.horizontal, 16)
+                    // ✅ Grouped picks — one card per match
+                    ForEach(groupedPicks, id: \.match) { group in
+                        GroupedPicksCard(matchName: group.match, picks: group.picks)
+                            .padding(.horizontal, 16)
+                    }
                 }
 
                 if viewModel.feedPicks.isEmpty && viewModel.suggestedMatches.isEmpty {
                     ArenaEmptyState()
                 }
-
                 Spacer().frame(height: 80)
             }
             .padding(.top, 16)
+        }
+    }
+}
+
+// MARK: - Grouped Picks Card ✅ NEW
+
+struct GroupedPicksCard: View {
+    let matchName: String
+    let picks: [Pick]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Match header
+            HStack(spacing: 8) {
+                Image(systemName: "soccerball")
+                    .font(.system(size: 11)).foregroundStyle(Color.predktLime)
+                Text(matchName)
+                    .font(.system(size: 12, weight: .bold)).foregroundStyle(.white).lineLimit(1)
+                Spacer()
+                Text("\(picks.count) play\(picks.count == 1 ? "" : "s")")
+                    .font(.system(size: 10)).foregroundStyle(Color.predktMuted)
+            }
+            .padding(.bottom, 4)
+
+            Divider().background(Color.predktBorder)
+
+            // Each pick as a compact row
+            ForEach(picks) { pick in
+                PickRow(pick: pick)
+                if pick.id != picks.last?.id {
+                    Divider().background(Color.predktBorder.opacity(0.5))
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.predktCard)
+        .cornerRadius(16)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.predktBorder, lineWidth: 1))
+    }
+}
+
+// MARK: - Pick Row (compact, inside grouped card)
+
+struct PickRow: View {
+    let pick: Pick
+
+    private var username: String { pick.profiles?.username ?? pick.username ?? "Player" }
+    private var agreePct: Int { min(95, max(30, pick.confidence + Int.random(in: -10...10))) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                // Avatar
+                Circle()
+                    .fill(Color.predktLime.opacity(0.12))
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Text(String(username.prefix(1)).uppercased())
+                            .font(.system(size: 11, weight: .black)).foregroundStyle(Color.predktLime)
+                    )
+
+                Text(username).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+
+                Spacer()
+
+                // Result badge
+                Text(resultLabel)
+                    .font(.system(size: 9, weight: .black)).foregroundStyle(resultColour)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(resultColour.opacity(0.12)).cornerRadius(6)
+            }
+
+            // Prediction + XP
+            HStack(spacing: 6) {
+                Text("⚡ \(pick.market)")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Color.predktLime.opacity(0.1)).cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.predktLime.opacity(0.2), lineWidth: 1))
+                Spacer()
+                Text("+\(pick.points_possible) XP")
+                    .font(.system(size: 11, weight: .black)).foregroundStyle(Color.predktLime)
+            }
+
+            // Community bar
+            VStack(spacing: 4) {
+                HStack {
+                    Text("Community agreement").font(.system(size: 9)).foregroundStyle(Color.predktMuted)
+                    Spacer()
+                    Text("\(agreePct)%").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktLime)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.06)).frame(height: 5)
+                        RoundedRectangle(cornerRadius: 3).fill(Color.predktLime)
+                            .frame(width: geo.size.width * CGFloat(agreePct) / 100, height: 5)
+                    }
+                }
+                .frame(height: 5)
+            }
+        }
+    }
+
+    private var resultLabel: String {
+        switch pick.result {
+        case "correct": return "✓ CORRECT"
+        case "wrong":   return "✗ WRONG"
+        default:        return "⏳ PENDING"
+        }
+    }
+    private var resultColour: Color {
+        switch pick.result {
+        case "correct": return Color.predktLime
+        case "wrong":   return Color.predktCoral
+        default:        return Color.predktMuted
         }
     }
 }
@@ -142,10 +255,8 @@ struct FollowingFeed: View {
                         Text("Follow teams and leagues to see their challenges here")
                             .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
                         Button(action: { viewModel.showInterestsPicker = true }) {
-                            Text("Choose Interests")
-                                .font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
-                                .padding(.horizontal, 24).padding(.vertical, 12)
-                                .background(Color.predktLime).cornerRadius(20)
+                            Text("Choose Interests").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                                .padding(.horizontal, 24).padding(.vertical, 12).background(Color.predktLime).cornerRadius(20)
                         }
                     }
                     .padding(.top, 100).padding(.horizontal, 40)
@@ -210,43 +321,58 @@ struct ArenaMatchCard: View {
     let match: Match
 
     var body: some View {
-        HStack(spacing: 14) {
-            // Home
-            HStack(spacing: 10) {
-                TeamBadgeView(url: match.homeLogo)
-                Text(match.home)
-                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Centre
-            if match.isLive || match.isFinished {
-                Text(match.score)
-                    .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
-            } else {
-                VStack(spacing: 1) {
-                    Text(match.kickoffTime)
-                        .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktLime)
-                    Text("KO").font(.system(size: 8, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.6))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(match.competition).font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.predktMuted)
+                Spacer()
+                if match.isLive {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.predktCoral).frame(width: 5, height: 5)
+                        Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")").font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktCoral)
+                    }
+                } else {
+                    Text(match.matchDate).font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
                 }
             }
+            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
 
-            // Away
-            HStack(spacing: 10) {
-                Text(match.away)
-                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-                    .lineLimit(1).multilineTextAlignment(.trailing)
-                TeamBadgeView(url: match.awayLogo)
+            HStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    TeamBadgeView(url: match.homeLogo)
+                    Text(match.home).font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if match.isLive || match.isFinished {
+                    Text(match.score).font(.system(size: 15, weight: .black)).foregroundStyle(.white).frame(width: 56)
+                } else {
+                    VStack(spacing: 1) {
+                        Text(match.kickoffTime).font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktLime)
+                        Text("KO").font(.system(size: 8, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.6))
+                    }
+                    .frame(width: 56)
+                }
+
+                HStack(spacing: 10) {
+                    Text(match.away).font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1).multilineTextAlignment(.trailing)
+                    TeamBadgeView(url: match.awayLogo)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal, 14)
+
+            if let venue = match.venue, !venue.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "mappin.circle.fill").font(.system(size: 10)).foregroundStyle(Color.predktMuted)
+                    Text(venue).font(.system(size: 10)).foregroundStyle(Color.predktMuted).lineLimit(1)
+                }
+                .padding(.horizontal, 14).padding(.top, 6).padding(.bottom, 12)
+            } else {
+                Spacer().frame(height: 12)
+            }
         }
-        .padding(14)
-        .background(Color.predktCard)
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(match.isLive ? Color.predktCoral.opacity(0.3) : Color.predktBorder, lineWidth: 1)
-        )
+        .background(Color.predktCard).cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(match.isLive ? Color.predktCoral.opacity(0.3) : Color.predktBorder, lineWidth: 1))
     }
 }
 
@@ -254,20 +380,17 @@ struct ArenaMatchCard: View {
 
 struct ArenaLiveCard: View {
     let match: Match
-
     var body: some View {
         VStack(spacing: 10) {
             HStack {
                 HStack(spacing: 5) {
                     Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
-                    Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
-                        .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktCoral).kerning(1)
+                    Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")").font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktCoral).kerning(1)
                 }
                 Text("·").foregroundStyle(Color.predktMuted)
                 Text(match.competition).font(.system(size: 10)).foregroundStyle(Color.predktMuted)
                 Spacer()
             }
-
             HStack {
                 HStack(spacing: 10) {
                     TeamBadgeView(url: match.homeLogo)
@@ -282,104 +405,8 @@ struct ArenaLiveCard: View {
                 }
             }
         }
-        .padding(16)
-        .background(Color.predktCard)
-        .cornerRadius(16)
+        .padding(16).background(Color.predktCard).cornerRadius(16)
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.predktCoral.opacity(0.2), lineWidth: 1))
-    }
-}
-
-// MARK: - Arena Pick Card (social poll look)
-
-struct ArenaPickCard: View {
-    let pick: Pick
-
-    private var username: String { pick.profiles?.username ?? pick.username ?? "Player" }
-    private var initial: String { String(username.prefix(1)).uppercased() }
-
-    // Simulated community agreement bar
-    private var agreePct: Int { max(30, min(85, pick.confidence + Int.random(in: -15...15)) ) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // User row
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(Color.predktLime.opacity(0.15))
-                    .frame(width: 36, height: 36)
-                    .overlay(Text(initial).font(.system(size: 14, weight: .black)).foregroundStyle(Color.predktLime))
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(username).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-                    Text(pick.match).font(.system(size: 11)).foregroundStyle(Color.predktMuted).lineLimit(1)
-                }
-                Spacer()
-
-                // Result badge
-                Text(resultLabel)
-                    .font(.system(size: 10, weight: .black))
-                    .foregroundStyle(resultColour)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(resultColour.opacity(0.12)).cornerRadius(8)
-            }
-
-            // Prediction pill
-            HStack(spacing: 6) {
-                Text("⚡")
-                Text(pick.market)
-                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(Color.predktLime.opacity(0.1))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.predktLime.opacity(0.2), lineWidth: 1))
-
-            // Community poll bar
-            VStack(spacing: 5) {
-                HStack {
-                    Text("Community agreement").font(.system(size: 10)).foregroundStyle(Color.predktMuted)
-                    Spacer()
-                    Text("\(agreePct)%").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
-                }
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.06)).frame(height: 6)
-                        RoundedRectangle(cornerRadius: 3).fill(Color.predktLime)
-                            .frame(width: geo.size.width * CGFloat(agreePct) / 100, height: 6)
-                    }
-                }
-                .frame(height: 6)
-            }
-
-            // XP
-            HStack {
-                Text("+\(pick.points_possible) XP")
-                    .font(.system(size: 11, weight: .black)).foregroundStyle(Color.predktLime)
-                Spacer()
-                Text("\(pick.confidence)% confident")
-                    .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
-            }
-        }
-        .padding(16)
-        .background(Color.predktCard)
-        .cornerRadius(16)
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.predktBorder, lineWidth: 1))
-    }
-
-    private var resultLabel: String {
-        switch pick.result {
-        case "correct": return "✓ CORRECT"
-        case "wrong":   return "✗ WRONG"
-        default:        return "⏳ PENDING"
-        }
-    }
-
-    private var resultColour: Color {
-        switch pick.result {
-        case "correct": return Color.predktLime
-        case "wrong":   return Color.predktCoral
-        default:        return Color.predktMuted
-        }
     }
 }
 
@@ -387,27 +414,21 @@ struct ArenaPickCard: View {
 
 struct ArenaInterestsPrompt: View {
     let onTap: () -> Void
-
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 14) {
                 Text("🎯").font(.system(size: 28))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Personalise your Arena")
-                        .font(.system(size: 14, weight: .black)).foregroundStyle(.white)
-                    Text("Follow teams & leagues you care about")
-                        .font(.system(size: 12)).foregroundStyle(Color.predktMuted)
+                    Text("Personalise your Arena").font(.system(size: 14, weight: .black)).foregroundStyle(.white)
+                    Text("Follow teams & leagues you care about").font(.system(size: 12)).foregroundStyle(Color.predktMuted)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").foregroundStyle(Color.predktLime).font(.system(size: 13, weight: .bold))
             }
-            .padding(16)
-            .background(Color.predktLime.opacity(0.07))
-            .cornerRadius(16)
+            .padding(16).background(Color.predktLime.opacity(0.07)).cornerRadius(16)
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.predktLime.opacity(0.25), lineWidth: 1))
         }
-        .buttonStyle(PlainButtonStyle())
-        .padding(.horizontal, 16)
+        .buttonStyle(PlainButtonStyle()).padding(.horizontal, 16)
     }
 }
 

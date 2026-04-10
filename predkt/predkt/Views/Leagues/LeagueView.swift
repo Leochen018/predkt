@@ -1,5 +1,5 @@
 import SwiftUI
-
+import Auth
 struct LeagueView: View {
     @StateObject private var viewModel = LeagueViewModel()
     @EnvironmentObject var supabaseManager: SupabaseManager
@@ -51,12 +51,12 @@ struct LeagueView: View {
                     TabView(selection: $selectedTab) {
                         GlobalLeaderboardTab(
                             entries: viewModel.globalLeaderboard,
-                            currentUserId: supabaseManager.user?.id?.uuidString.lowercased()
+                            currentUserId: supabaseManager.user?.id.uuidString.lowercased()
                         ).tag(0)
 
                         WeeklyLeaderboardTab(
                             entries: viewModel.weeklyLeaderboard,
-                            currentUserId: supabaseManager.user?.id?.uuidString.lowercased()
+                            currentUserId: supabaseManager.user?.id.uuidString.lowercased()
                         ).tag(1)
 
                         MyLeaguesTab(viewModel: viewModel).tag(2)

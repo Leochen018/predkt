@@ -1,6 +1,6 @@
 import Foundation
 import Supabase
-
+import Combine
 struct LeaderboardEntry: Identifiable, Decodable {
     let id: String
     let username: String
