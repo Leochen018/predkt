@@ -5,7 +5,6 @@ struct PredictView: View {
     @State private var showingQuestions = false
     @State private var selectedMatch: Match?
     @State private var myPicksCount = 0
-    @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -29,7 +28,7 @@ struct PredictView: View {
                 }
                 .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
 
-                // Date carousel — scrolls to selected date
+                // Date carousel
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -45,25 +44,16 @@ struct PredictView: View {
                         }
                         .padding(.horizontal, 20).padding(.vertical, 10)
                     }
-                    .onChange(of: viewModel.selectedDate) { _ in
-                        // Scroll carousel to keep selected date in view
-                        let days = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: Calendar.current.startOfDay(for: viewModel.selectedDate)).day ?? 0
+                    .onChange(of: viewModel.selectedDate) {
+                        let days = Calendar.current.dateComponents(
+                            [.day],
+                            from: Calendar.current.startOfDay(for: Date()),
+                            to: Calendar.current.startOfDay(for: viewModel.selectedDate)
+                        ).day ?? 0
                         withAnimation { proxy.scrollTo(max(0, days), anchor: .center) }
                     }
                 }
                 .background(Color.predktCard.opacity(0.5))
-
-                // Swipe hint
-                if !viewModel.matches.isEmpty {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left").font(.system(size: 9))
-                        Text("SWIPE TO CHANGE DAY")
-                            .font(.system(size: 9, weight: .bold)).kerning(1)
-                        Image(systemName: "chevron.right").font(.system(size: 9))
-                    }
-                    .foregroundStyle(Color.predktMuted.opacity(0.5))
-                    .padding(.vertical, 4)
-                }
 
                 if viewModel.isLoading {
                     Spacer()
@@ -87,52 +77,20 @@ struct PredictView: View {
                     .padding(20)
                     Spacer()
                 } else {
-                    // ✅ Swipeable match list
-                    ZStack {
-                        if viewModel.matchesByLeague.isEmpty {
-                            EmptyMatchesCard(onNext: { viewModel.goToNextDay() })
-                        } else {
-                            ScrollView(showsIndicators: false) {
-                                VStack(spacing: 0) {
-                                    // Summary
-                                    HStack {
-                                        Text("\(viewModel.filteredMatches.count) MATCHES · \(viewModel.matchesByLeague.count) COMPETITIONS")
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundStyle(Color.predktMuted).kerning(1)
-                                        Spacer()
+                    // ✅ Full-page swipe area
+                    matchContent
+                        .gesture(
+                            DragGesture(minimumDistance: 40, coordinateSpace: .local)
+                                .onEnded { value in
+                                    let h = value.translation.width
+                                    let v = abs(value.translation.height)
+                                    guard abs(h) > v else { return }
+                                    withAnimation(.easeInOut(duration: 0.25)) {
+                                        if h < -40 { viewModel.goToNextDay() }
+                                        else if h > 40 { viewModel.goToPreviousDay() }
                                     }
-                                    .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
-
-                                    ForEach(viewModel.matchesByLeague, id: \.league) { group in
-                                        LeagueSection(
-                                            league: group.league,
-                                            matches: group.matches,
-                                            onSelect: { match in
-                                                viewModel.clearAnswers()
-                                                selectedMatch = match
-                                                showingQuestions = true
-                                            }
-                                        )
-                                    }
-                                    Spacer().frame(height: 50)
                                 }
-                            }
-                        }
-                    }
-                    // ✅ Swipe gesture — left = next day, right = previous day
-                    .gesture(
-                        DragGesture(minimumDistance: 40, coordinateSpace: .local)
-                            .onEnded { value in
-                                let horizontal = value.translation.width
-                                let vertical   = abs(value.translation.height)
-                                // Only trigger if mostly horizontal
-                                guard abs(horizontal) > vertical else { return }
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    if horizontal < -40 { viewModel.goToNextDay() }
-                                    else if horizontal > 40 { viewModel.goToPreviousDay() }
-                                }
-                            }
-                    )
+                        )
                 }
             }
         }
@@ -148,6 +106,47 @@ struct PredictView: View {
             }
         }
     }
+
+    // Extracted so the gesture applies to the whole content area
+    @ViewBuilder
+    private var matchContent: some View {
+        if viewModel.matchesByLeague.isEmpty {
+            EmptyMatchesCard(onNext: { viewModel.goToNextDay() })
+        } else {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    // Count bar
+                    HStack {
+                        Text("\(viewModel.filteredMatches.count) MATCHES · \(viewModel.matchesByLeague.count) COMPETITIONS")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.predktMuted).kerning(1)
+                        Spacer()
+                        // Swipe hint
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.left").font(.system(size: 8))
+                            Text("SWIPE").font(.system(size: 8, weight: .bold)).kerning(1)
+                            Image(systemName: "chevron.right").font(.system(size: 8))
+                        }
+                        .foregroundStyle(Color.predktMuted.opacity(0.4))
+                    }
+                    .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
+
+                    ForEach(viewModel.matchesByLeague, id: \.league) { group in
+                        LeagueSection(
+                            league: group.league,
+                            matches: group.matches,
+                            onSelect: { match in
+                                viewModel.clearAnswers()
+                                selectedMatch = match
+                                showingQuestions = true
+                            }
+                        )
+                    }
+                    Spacer().frame(height: 50)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - League Section
@@ -160,6 +159,7 @@ struct LeagueSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // League header — sticky
             Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
                 HStack(spacing: 10) {
                     Rectangle().fill(Color.predktLime).frame(width: 3, height: 16).cornerRadius(2)
@@ -174,17 +174,21 @@ struct LeagueSection: View {
                         .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
                 .padding(.horizontal, 20).padding(.vertical, 12)
-                .background(Color.predktCard.opacity(0.4))
+                .background(Color.predktCard.opacity(0.5))
             }
             .buttonStyle(PlainButtonStyle())
 
             if isExpanded {
-                VStack(spacing: 1) {
+                VStack(spacing: 0) {
                     ForEach(matches, id: \.id) { match in
                         Button(action: { onSelect(match) }) {
                             MatchRow(match: match)
                         }
                         .buttonStyle(PlainButtonStyle())
+
+                        if match.id != matches.last?.id {
+                            Divider().background(Color.predktBorder).padding(.leading, 70)
+                        }
                     }
                 }
                 .background(Color.predktBg)
@@ -195,57 +199,74 @@ struct LeagueSection: View {
     }
 }
 
-// MARK: - Match Row
+// MARK: - Match Row — bigger, no chevron
 
 struct MatchRow: View {
     let match: Match
 
     var body: some View {
         HStack(spacing: 0) {
-            // Time
-            VStack(spacing: 2) {
+            // Time column
+            VStack(spacing: 4) {
                 if match.isLive {
-                    HStack(spacing: 3) {
-                        Circle().fill(Color.predktCoral).frame(width: 5, height: 5)
-                        Text(match.elapsed.map { "\($0)'" } ?? "LIVE")
-                            .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktCoral)
-                    }
+                    Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
+                    Text(match.elapsed.map { "\($0)'" } ?? "LIVE")
+                        .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
                 } else if match.isFinished {
-                    Text("FT").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted)
+                    Text("FT")
+                        .font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
                 } else {
                     Text(match.kickoffTime)
-                        .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktLime)
+                        .font(.system(size: 15, weight: .black)).foregroundStyle(Color.predktLime)
+                    Text("KO")
+                        .font(.system(size: 8, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.6))
                 }
             }
-            .frame(width: 52)
+            .frame(width: 60)
 
-            Rectangle().fill(Color.predktBorder).frame(width: 1, height: 44)
+            Rectangle().fill(Color.predktBorder).frame(width: 1, height: 60)
 
+            // Teams + score
             HStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    TeamBadgeView(url: match.homeLogo).frame(width: 22, height: 22)
-                    Text(match.home).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                // Home
+                HStack(spacing: 10) {
+                    TeamBadgeView(url: match.homeLogo).frame(width: 28, height: 28)
+                    Text(match.home)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                // Score / VS
                 if match.isLive || match.isFinished {
-                    Text(match.score).font(.system(size: 14, weight: .black)).foregroundStyle(.white).frame(width: 52)
+                    VStack(spacing: 2) {
+                        Text(match.score)
+                            .font(.system(size: 16, weight: .black)).foregroundStyle(.white)
+                        if match.isLive {
+                            Text("LIVE").font(.system(size: 7, weight: .black))
+                                .foregroundStyle(Color.predktCoral)
+                        }
+                    }
+                    .frame(width: 60)
                 } else {
-                    Text("vs").font(.system(size: 11)).foregroundStyle(Color.predktMuted).frame(width: 52)
+                    Text("vs")
+                        .font(.system(size: 12)).foregroundStyle(Color.predktMuted)
+                        .frame(width: 60)
                 }
 
-                HStack(spacing: 8) {
-                    Text(match.away).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1).multilineTextAlignment(.trailing)
-                    TeamBadgeView(url: match.awayLogo).frame(width: 22, height: 22)
+                // Away
+                HStack(spacing: 10) {
+                    Text(match.away)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white).lineLimit(1)
+                        .multilineTextAlignment(.trailing)
+                    TeamBadgeView(url: match.awayLogo).frame(width: 28, height: 28)
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .padding(.horizontal, 14)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).frame(width: 32)
+            .padding(.horizontal, 16)
         }
-        .frame(height: 56)
+        .frame(height: 72)   // ✅ Bigger row height (was 56)
         .background(Color.predktBg)
         .contentShape(Rectangle())
     }
@@ -265,11 +286,14 @@ struct QuestionsSheetView: View {
         ZStack(alignment: .bottom) {
             Color.predktBg.ignoresSafeArea()
             VStack(spacing: 0) {
+                // Match header
                 VStack(spacing: 12) {
                     HStack {
                         Button(action: { isPresented = false }) {
-                            Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(Color.predktMuted).padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.predktMuted)
+                                .padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
                         }
                         Spacer()
                         if match.isLive {
@@ -285,12 +309,15 @@ struct QuestionsSheetView: View {
                     HStack(spacing: 16) {
                         TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
                         VStack(spacing: 2) {
-                            Text(match.displayName).font(.system(size: 15, weight: .black)).foregroundStyle(.white).multilineTextAlignment(.center)
+                            Text(match.displayName)
+                                .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
                             HStack(spacing: 6) {
                                 Text(match.competition).font(.system(size: 11)).foregroundStyle(Color.predktMuted)
                                 if !match.isLive, !match.isFinished {
                                     Text("·").foregroundStyle(Color.predktMuted)
-                                    Text("\(match.matchDate) · \(match.kickoffTime)").font(.system(size: 11)).foregroundStyle(Color.predktLime)
+                                    Text("\(match.matchDate) · \(match.kickoffTime)")
+                                        .font(.system(size: 11)).foregroundStyle(Color.predktLime)
                                 }
                             }
                         }
@@ -305,7 +332,7 @@ struct QuestionsSheetView: View {
                 .background(Color.predktCard).padding(.bottom, 1)
 
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 20) {
+                    LazyVStack(spacing: 20) {
                         ForEach(questions) { question in
                             QuestionCard(question: question, viewModel: viewModel)
                         }
@@ -315,6 +342,7 @@ struct QuestionsSheetView: View {
                 }
             }
 
+            // Floating submit
             if !viewModel.lockedAnswers.isEmpty {
                 VStack(spacing: 0) {
                     LinearGradient(colors: [Color.predktBg.opacity(0), Color.predktBg], startPoint: .top, endPoint: .bottom).frame(height: 24)
@@ -365,14 +393,16 @@ struct QuestionCard: View {
                 HStack(spacing: 8) {
                     Text(question.category).font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktLime).kerning(1.5)
                     Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 10)
             }
             .buttonStyle(PlainButtonStyle())
 
             if isExpanded {
-                Text(question.prompt).font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+                Text(question.prompt)
+                    .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
                     .padding(.horizontal, 16).padding(.bottom, 14)
                 VStack(spacing: 8) {
                     ForEach(question.answers) { answer in
@@ -395,6 +425,7 @@ struct AnswerPollRow: View {
 
     var isLocked: Bool     { viewModel.isLocked(answer) }
     var isConflicted: Bool { viewModel.conflicts(answer) }
+
     var xpColour: Color {
         switch answer.probability {
         case 0..<30:  return Color.predktCoral
@@ -417,12 +448,16 @@ struct AnswerPollRow: View {
                         Circle().stroke(isLocked ? Color.predktLime : Color.white.opacity(0.15), lineWidth: 2).frame(width: 22, height: 22)
                         if isLocked { Circle().fill(Color.predktLime).frame(width: 14, height: 14) }
                     }
-                    Text(answer.label).font(.system(size: 14, weight: isLocked ? .bold : .medium))
-                        .foregroundStyle(isLocked ? .white : isConflicted ? Color.predktMuted.opacity(0.4) : Color.predktMuted).lineLimit(2)
+                    Text(answer.label)
+                        .font(.system(size: 14, weight: isLocked ? .bold : .medium))
+                        .foregroundStyle(isLocked ? .white : isConflicted ? Color.predktMuted.opacity(0.4) : Color.predktMuted)
+                        .lineLimit(2)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black)).foregroundStyle(isLocked ? Color.predktLime : xpColour)
-                        Text(answer.probabilityDisplay).font(.system(size: 10)).foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
+                        Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black))
+                            .foregroundStyle(isLocked ? Color.predktLime : xpColour)
+                        Text(answer.probabilityDisplay).font(.system(size: 10))
+                            .foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
                     }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 14)
@@ -449,7 +484,8 @@ struct LockedAnswersBanner: View {
                     HStack(spacing: 6) {
                         ForEach(viewModel.lockedAnswers) { answer in
                             Text(answer.shortLabel).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 8).padding(.vertical, 4).background(Color.predktLime.opacity(0.15)).cornerRadius(6)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color.predktLime.opacity(0.15)).cornerRadius(6)
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.predktLime.opacity(0.3), lineWidth: 1))
                         }
                     }
@@ -505,8 +541,7 @@ struct EmptyMatchesCard: View {
                 .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
             Button(action: onNext) {
                 HStack(spacing: 6) {
-                    Text("Next Day")
-                        .font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                    Text("Next Day").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
                     Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
                 }
                 .padding(.horizontal, 24).padding(.vertical, 12)
