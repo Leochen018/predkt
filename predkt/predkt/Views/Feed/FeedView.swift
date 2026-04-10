@@ -3,137 +3,121 @@ import SwiftUI
 struct FeedView: View {
     @StateObject private var viewModel = FeedViewModel()
     @State private var selectedTab = 0
-    let tabs = ["For You", "Following", "Live"]
+    let tabs = ["For You", "Following", "🔴 Live"]
 
     var body: some View {
         ZStack {
-            Color(red: 0.05, green: 0.05, blue: 0.08).ignoresSafeArea()
+            Color.predktBg.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // MARK: Header
+                // Header
                 HStack {
-                    Text("predkt")
-                        .font(.system(size: 22, weight: .black, design: .rounded))
-                        .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("ARENA")
+                            .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktMuted).kerning(2)
+                        Text("Community plays")
+                            .font(.system(size: 20, weight: .black)).foregroundStyle(.white)
+                    }
                     Spacer()
                     Button(action: { viewModel.showInterestsPicker = true }) {
                         Image(systemName: "slider.horizontal.3")
-                            .foregroundStyle(.white)
-                            .font(.system(size: 17))
+                            .foregroundStyle(Color.predktLime)
+                            .font(.system(size: 16))
+                            .padding(10)
+                            .background(Color.predktLime.opacity(0.12))
+                            .cornerRadius(10)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
 
-                // MARK: Tab Bar
+                // Tabs
                 HStack(spacing: 0) {
                     ForEach(Array(tabs.enumerated()), id: \.offset) { i, tab in
                         Button(action: { withAnimation { selectedTab = i } }) {
                             VStack(spacing: 6) {
-                                HStack(spacing: 5) {
-                                    if tab == "Live" {
-                                        Circle()
-                                            .fill(.red)
-                                            .frame(width: 6, height: 6)
-                                    }
-                                    Text(tab)
-                                        .font(.system(size: 14, weight: selectedTab == i ? .bold : .medium))
-                                        .foregroundStyle(selectedTab == i ? .white : .gray)
-                                }
+                                Text(tab)
+                                    .font(.system(size: 13, weight: selectedTab == i ? .bold : .medium))
+                                    .foregroundStyle(selectedTab == i ? .white : Color.predktMuted)
                                 Rectangle()
-                                    .fill(selectedTab == i
-                                          ? Color(red: 0.42, green: 0.39, blue: 1.0)
-                                          : .clear)
-                                    .frame(height: 2)
+                                    .fill(selectedTab == i ? Color.predktLime : .clear)
+                                    .frame(height: 2).cornerRadius(1)
                             }
                         }
                         .frame(maxWidth: .infinity)
                     }
                 }
                 .padding(.horizontal, 16)
-                .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+                .background(Color.predktCard.opacity(0.6))
 
-                // MARK: Content
                 if viewModel.isLoading {
                     Spacer()
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: Color(red: 0.42, green: 0.39, blue: 1.0)))
+                    ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.predktLime))
                     Spacer()
                 } else {
                     TabView(selection: $selectedTab) {
-                        ForYouTab(viewModel: viewModel).tag(0)
-                        FollowingTab(viewModel: viewModel).tag(1)
-                        LiveTab(viewModel: viewModel).tag(2)
+                        ForYouFeed(viewModel: viewModel).tag(0)
+                        FollowingFeed(viewModel: viewModel).tag(1)
+                        LiveFeed(viewModel: viewModel).tag(2)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                 }
             }
         }
-        .onAppear {
-            Task { await viewModel.load() }
-        }
+        .onAppear { Task { await viewModel.load() } }
         .sheet(isPresented: $viewModel.showInterestsPicker) {
             InterestsPickerView(viewModel: viewModel)
         }
     }
 }
 
-// MARK: - For You Tab
+// MARK: - For You Feed
 
-struct ForYouTab: View {
+struct ForYouFeed: View {
     @ObservedObject var viewModel: FeedViewModel
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 16) {
-
-                // Interests prompt if none set
+            VStack(spacing: 14) {
+                // Interests prompt
                 if viewModel.followedLeagueIds.isEmpty && viewModel.followedTeamNames.isEmpty {
-                    InterestsPromptCard(onTap: { viewModel.showInterestsPicker = true })
+                    ArenaInterestsPrompt(onTap: { viewModel.showInterestsPicker = true })
                 }
 
-                // Suggested matches based on interests
+                // Suggested matches section
                 if !viewModel.suggestedMatches.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text("SUGGESTED MATCHES")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(Color(red: 0.6, green: 0.59, blue: 0.68))
+                            Text("🎯 CHALLENGES FOR YOU")
+                                .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktLime).kerning(1.5)
                             Spacer()
-                            Text("Based on your interests")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
                         }
-
-                        ForEach(viewModel.suggestedMatches.prefix(5)) { match in
-                            SuggestedMatchCard(match: match)
+                        ForEach(viewModel.suggestedMatches.prefix(4)) { match in
+                            ArenaMatchCard(match: match)
                         }
                     }
                     .padding(.horizontal, 16)
                 }
 
                 // Divider
-                if !viewModel.suggestedMatches.isEmpty && !viewModel.feedPicks.isEmpty {
+                if !viewModel.feedPicks.isEmpty {
                     HStack {
-                        Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
-                        Text("COMMUNITY")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.gray)
-                            .padding(.horizontal, 8)
-                        Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+                        Rectangle().fill(Color.predktBorder).frame(height: 1)
+                        Text("COMMUNITY PLAYS")
+                            .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktMuted).kerning(2)
+                            .fixedSize()
+                        Rectangle().fill(Color.predktBorder).frame(height: 1)
                     }
                     .padding(.horizontal, 16)
                 }
 
                 // Community picks
                 ForEach(viewModel.feedPicks) { pick in
-                    PickCard(pick: pick)
+                    ArenaPickCard(pick: pick)
                         .padding(.horizontal, 16)
                 }
 
                 if viewModel.feedPicks.isEmpty && viewModel.suggestedMatches.isEmpty {
-                    EmptyFeedCard()
+                    ArenaEmptyState()
                 }
 
                 Spacer().frame(height: 80)
@@ -143,60 +127,49 @@ struct ForYouTab: View {
     }
 }
 
-// MARK: - Following Tab
+// MARK: - Following Feed
 
-struct FollowingTab: View {
+struct FollowingFeed: View {
     @ObservedObject var viewModel: FeedViewModel
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 16) {
-                // Followed leagues matches
-                if !viewModel.followedLeagueIds.isEmpty || !viewModel.followedTeamNames.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("YOUR LEAGUES & TEAMS")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Color(red: 0.6, green: 0.59, blue: 0.68))
-                            .padding(.horizontal, 16)
-
-                        ForEach(viewModel.suggestedMatches) { match in
-                            SuggestedMatchCard(match: match)
-                                .padding(.horizontal, 16)
-                        }
-                    }
-                    .padding(.top, 16)
-                } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "heart.slash")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.gray.opacity(0.3))
-                        Text("Follow teams and leagues to see their matches here")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.gray)
-                            .multilineTextAlignment(.center)
+            VStack(spacing: 12) {
+                if viewModel.suggestedMatches.isEmpty && viewModel.followedLeagueIds.isEmpty {
+                    VStack(spacing: 16) {
+                        Text("❤️").font(.system(size: 44))
+                        Text("Nothing here yet").font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+                        Text("Follow teams and leagues to see their challenges here")
+                            .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
                         Button(action: { viewModel.showInterestsPicker = true }) {
                             Text("Choose Interests")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 10)
-                                .background(Color(red: 0.42, green: 0.39, blue: 1.0))
-                                .cornerRadius(20)
+                                .font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                                .padding(.horizontal, 24).padding(.vertical, 12)
+                                .background(Color.predktLime).cornerRadius(20)
                         }
                     }
-                    .padding(.top, 100)
-                    .padding(.horizontal, 40)
-                }
+                    .padding(.top, 100).padding(.horizontal, 40)
+                } else {
+                    HStack {
+                        Text("YOUR TEAMS & LEAGUES")
+                            .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktMuted).kerning(1.5)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16).padding(.top, 16)
 
+                    ForEach(viewModel.suggestedMatches) { match in
+                        ArenaMatchCard(match: match).padding(.horizontal, 16)
+                    }
+                }
                 Spacer().frame(height: 80)
             }
         }
     }
 }
 
-// MARK: - Live Tab
+// MARK: - Live Feed
 
-struct LiveTab: View {
+struct LiveFeed: View {
     @ObservedObject var viewModel: FeedViewModel
 
     var body: some View {
@@ -204,262 +177,248 @@ struct LiveTab: View {
             VStack(spacing: 12) {
                 if viewModel.liveMatches.isEmpty {
                     VStack(spacing: 12) {
-                        Image(systemName: "sportscourt")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.gray.opacity(0.3))
-                        Text("No matches live right now")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.gray)
+                        Text("📡").font(.system(size: 44))
+                        Text("Nothing live right now").font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+                        Text("Check back when matches are in progress")
+                            .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
                     }
-                    .padding(.top, 100)
+                    .padding(.top, 100).padding(.horizontal, 40)
                 } else {
+                    HStack {
+                        HStack(spacing: 5) {
+                            Circle().fill(Color.predktCoral).frame(width: 7, height: 7)
+                            Text("\(viewModel.liveMatches.count) LIVE NOW")
+                                .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral).kerning(1.5)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16).padding(.top, 16)
+
                     ForEach(viewModel.liveMatches) { match in
-                        LiveMatchCard(match: match)
-                            .padding(.horizontal, 16)
+                        ArenaLiveCard(match: match).padding(.horizontal, 16)
                     }
                 }
                 Spacer().frame(height: 80)
             }
-            .padding(.top, 16)
         }
     }
 }
 
-// MARK: - Suggested Match Card
+// MARK: - Arena Match Card
 
-struct SuggestedMatchCard: View {
+struct ArenaMatchCard: View {
     let match: Match
 
     var body: some View {
-        VStack(spacing: 0) {
-            // League bar
-            HStack(spacing: 6) {
-                if match.isLive {
-                    HStack(spacing: 4) {
-                        Circle().fill(.red).frame(width: 5, height: 5)
-                        Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.red)
-                    }
-                } else {
-                    Text("• \(match.kickoffTime)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
-                }
-                Text(match.competition.uppercased())
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color(red: 0.6, green: 0.59, blue: 0.68))
-                Spacer()
+        HStack(spacing: 14) {
+            // Home
+            HStack(spacing: 10) {
+                TeamBadgeView(url: match.homeLogo)
+                Text(match.home)
+                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Teams
-            HStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    TeamBadgeView(url: match.homeLogo)
-                    Text(match.home)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+            // Centre
+            if match.isLive || match.isFinished {
+                Text(match.score)
+                    .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
+            } else {
+                VStack(spacing: 1) {
+                    Text(match.kickoffTime)
+                        .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktLime)
+                    Text("KO").font(.system(size: 8, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.6))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                if match.isLive || match.isFinished {
-                    Text(match.score)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 60)
-                } else {
-                    Text("VS")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.gray)
-                        .frame(width: 60)
-                }
-
-                HStack(spacing: 10) {
-                    Text(match.away)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .multilineTextAlignment(.trailing)
-                    TeamBadgeView(url: match.awayLogo)
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
+
+            // Away
+            HStack(spacing: 10) {
+                Text(match.away)
+                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                    .lineLimit(1).multilineTextAlignment(.trailing)
+                TeamBadgeView(url: match.awayLogo)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .background(Color(red: 0.1, green: 0.1, blue: 0.12))
-        .cornerRadius(12)
+        .padding(14)
+        .background(Color.predktCard)
+        .cornerRadius(14)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(match.isLive ? Color.red.opacity(0.3) : Color.white.opacity(0.05), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(match.isLive ? Color.predktCoral.opacity(0.3) : Color.predktBorder, lineWidth: 1)
         )
     }
 }
 
-// MARK: - Live Match Card
+// MARK: - Arena Live Card
 
-struct LiveMatchCard: View {
+struct ArenaLiveCard: View {
     let match: Match
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             HStack {
                 HStack(spacing: 5) {
-                    Circle().fill(.red).frame(width: 6, height: 6)
+                    Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
                     Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.red)
+                        .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktCoral).kerning(1)
                 }
-                Text("·")
-                    .foregroundStyle(.gray)
-                Text(match.competition)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.gray)
+                Text("·").foregroundStyle(Color.predktMuted)
+                Text(match.competition).font(.system(size: 10)).foregroundStyle(Color.predktMuted)
                 Spacer()
             }
 
             HStack {
                 HStack(spacing: 10) {
                     TeamBadgeView(url: match.homeLogo)
-                    Text(match.home)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
+                    Text(match.home).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
                 }
                 Spacer()
-                Text(match.score)
-                    .font(.system(size: 22, weight: .black))
-                    .foregroundStyle(.white)
+                Text(match.score).font(.system(size: 28, weight: .black)).foregroundStyle(.white)
                 Spacer()
                 HStack(spacing: 10) {
-                    Text(match.away)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
+                    Text(match.away).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
                     TeamBadgeView(url: match.awayLogo)
                 }
             }
         }
         .padding(16)
-        .background(Color(red: 0.1, green: 0.1, blue: 0.12))
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.red.opacity(0.25), lineWidth: 1)
-        )
+        .background(Color.predktCard)
+        .cornerRadius(16)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.predktCoral.opacity(0.2), lineWidth: 1))
     }
 }
 
-// MARK: - Pick Card
+// MARK: - Arena Pick Card (social poll look)
 
-struct PickCard: View {
+struct ArenaPickCard: View {
     let pick: Pick
 
+    private var username: String { pick.profiles?.username ?? pick.username ?? "Player" }
+    private var initial: String { String(username.prefix(1)).uppercased() }
+
+    // Simulated community agreement bar
+    private var agreePct: Int { max(30, min(85, pick.confidence + Int.random(in: -15...15)) ) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            // User row
+            HStack(spacing: 10) {
                 Circle()
-                    .fill(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.2))
-                    .frame(width: 32, height: 32)
-                    .overlay(
-                        Text(String((pick.profiles?.username ?? pick.username ?? "?").prefix(1)).uppercased())
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
-                    )
+                    .fill(Color.predktLime.opacity(0.15))
+                    .frame(width: 36, height: 36)
+                    .overlay(Text(initial).font(.system(size: 14, weight: .black)).foregroundStyle(Color.predktLime))
+
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(pick.profiles?.username ?? pick.username ?? "Anonymous")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(pick.match)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.gray)
-                        .lineLimit(1)
+                    Text(username).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                    Text(pick.match).font(.system(size: 11)).foregroundStyle(Color.predktMuted).lineLimit(1)
                 }
                 Spacer()
-                Text(pick.resultIcon)
-                    .font(.system(size: 16))
+
+                // Result badge
+                Text(resultLabel)
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundStyle(resultColour)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(resultColour.opacity(0.12)).cornerRadius(8)
             }
 
-            HStack(spacing: 8) {
+            // Prediction pill
+            HStack(spacing: 6) {
+                Text("⚡")
                 Text(pick.market)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.15))
-                    .cornerRadius(6)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.3), lineWidth: 1)
-                    )
+                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Color.predktLime.opacity(0.1))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.predktLime.opacity(0.2), lineWidth: 1))
 
-                Text("\(pick.confidence)% confidence")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.gray)
+            // Community poll bar
+            VStack(spacing: 5) {
+                HStack {
+                    Text("Community agreement").font(.system(size: 10)).foregroundStyle(Color.predktMuted)
+                    Spacer()
+                    Text("\(agreePct)%").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.06)).frame(height: 6)
+                        RoundedRectangle(cornerRadius: 3).fill(Color.predktLime)
+                            .frame(width: geo.size.width * CGFloat(agreePct) / 100, height: 6)
+                    }
+                }
+                .frame(height: 6)
+            }
 
+            // XP
+            HStack {
+                Text("+\(pick.points_possible) XP")
+                    .font(.system(size: 11, weight: .black)).foregroundStyle(Color.predktLime)
                 Spacer()
-
-                Text(String(format: "%.2f", pick.odds))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
+                Text("\(pick.confidence)% confident")
+                    .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
             }
         }
-        .padding(14)
-        .background(Color(red: 0.1, green: 0.1, blue: 0.12))
-        .cornerRadius(12)
+        .padding(16)
+        .background(Color.predktCard)
+        .cornerRadius(16)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.predktBorder, lineWidth: 1))
+    }
+
+    private var resultLabel: String {
+        switch pick.result {
+        case "correct": return "✓ CORRECT"
+        case "wrong":   return "✗ WRONG"
+        default:        return "⏳ PENDING"
+        }
+    }
+
+    private var resultColour: Color {
+        switch pick.result {
+        case "correct": return Color.predktLime
+        case "wrong":   return Color.predktCoral
+        default:        return Color.predktMuted
+        }
     }
 }
 
-// MARK: - Interests Prompt Card
+// MARK: - Interests Prompt
 
-struct InterestsPromptCard: View {
+struct ArenaInterestsPrompt: View {
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 14) {
-                Image(systemName: "star.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
+                Text("🎯").font(.system(size: 28))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Personalise your feed")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text("Follow your favourite teams & leagues")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.gray)
+                    Text("Personalise your Arena")
+                        .font(.system(size: 14, weight: .black)).foregroundStyle(.white)
+                    Text("Follow teams & leagues you care about")
+                        .font(.system(size: 12)).foregroundStyle(Color.predktMuted)
                 }
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.gray)
-                    .font(.system(size: 13))
+                Image(systemName: "chevron.right").foregroundStyle(Color.predktLime).font(.system(size: 13, weight: .bold))
             }
             .padding(16)
-            .background(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.1))
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.3), lineWidth: 1)
-            )
+            .background(Color.predktLime.opacity(0.07))
+            .cornerRadius(16)
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.predktLime.opacity(0.25), lineWidth: 1))
         }
         .buttonStyle(PlainButtonStyle())
         .padding(.horizontal, 16)
     }
 }
 
-// MARK: - Empty Feed
+// MARK: - Empty State
 
-struct EmptyFeedCard: View {
+struct ArenaEmptyState: View {
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: "newspaper")
-                .font(.system(size: 36))
-                .foregroundStyle(.gray.opacity(0.3))
-            Text("No picks yet today")
-                .font(.system(size: 14))
-                .foregroundStyle(.gray)
+            Text("🏟️").font(.system(size: 44))
+            Text("The arena is quiet").font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+            Text("No plays yet today. Be the first!").font(.system(size: 13)).foregroundStyle(Color.predktMuted)
         }
         .padding(.top, 80)
     }

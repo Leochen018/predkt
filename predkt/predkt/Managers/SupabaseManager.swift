@@ -183,11 +183,12 @@ final class SupabaseManager: ObservableObject {
             .insert(pick)
             .execute()
     }
+}
     
     extension Date {
         func toISO8601String() -> String {
             let formatter = ISO8601DateFormatter()
             return formatter.string(from: self)
         }
-    }
+    
 }

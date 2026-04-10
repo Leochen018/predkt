@@ -91,21 +91,18 @@ final class FeedViewModel: ObservableObject {
     }
 
     // MARK: - Interests Persistence
-
     private func loadInterestsFromProfile(_ profile: UserProfile?) {
-        // Leagues stored as comma-separated IDs e.g. "39,140,2"
         if let leagueStr = profile?.favourite_league, !leagueStr.isEmpty {
-            let ids = leagueStr.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            let ids = leagueStr.components(separatedBy: ",")
+                .compactMap { Int($0.trimmingCharacters(in: CharacterSet.whitespaces)) }
             followedLeagueIds = Set(ids)
         }
-
-        // Teams stored as comma-separated names e.g. "Arsenal,Liverpool"
         if let teamStr = profile?.favourite_team, !teamStr.isEmpty {
-            let names = teamStr.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
+            let names = teamStr.components(separatedBy: ",")
+                .map { $0.trimmingCharacters(in: CharacterSet.whitespaces) }
             followedTeamNames = Set(names)
         }
     }
-
     func saveInterests() async {
         guard let userId = supabaseManager.user?.id else { return }
 

@@ -7,197 +7,206 @@ final class PredictViewModel: ObservableObject {
     @Published var selectedDate: Date = Date()
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var selectedMatch: Match?
     @Published var isSubmitting = false
-    @Published var selectedMarkets: [Market] = []
+    @Published var lockedAnswers: [Answer] = []
 
     private var matchesLoaded = false
     private let supabaseManager = SupabaseManager.shared
     private let topLeagueIDs = [39, 140, 135, 78, 61, 94, 88, 2, 3]
 
-    // MARK: - Market Model
+    // MARK: - Answer
 
-    struct Market: Identifiable, Equatable {
+    struct Answer: Identifiable, Equatable {
         let id = UUID()
         let label: String
-        let sublabel: String?   // e.g. player name for props
+        let shortLabel: String
         let probability: Int
         let odds: Double
-        let group: String       // conflict group
+        let group: String
 
-        var pointsValue: Int { max(1, 10 + (100 - probability)) }
+        var xpValue: Int { max(1, 10 + (100 - probability)) }
         var probabilityDisplay: String { "\(probability)%" }
-        static func == (lhs: Market, rhs: Market) -> Bool { lhs.id == rhs.id }
+        var communityPercent: Int { min(95, max(5, probability + Int.random(in: -8...8))) }
 
-        init(_ label: String, odds: Double, group: String, sublabel: String? = nil) {
-            self.label      = label
-            self.sublabel   = sublabel
-            self.odds       = odds
-            self.group      = group
+        static func == (lhs: Answer, rhs: Answer) -> Bool { lhs.id == rhs.id }
+
+        init(_ label: String, short: String, odds: Double, group: String) {
+            self.label       = label
+            self.shortLabel  = short
+            self.odds        = odds
+            self.group       = group
             self.probability = min(99, max(1, Int(round(1.0 / odds * 100))))
         }
     }
 
-    // MARK: - Market Groups
+    // MARK: - Question
 
-    struct MarketGroup: Identifiable {
+    struct Question: Identifiable {
         let id = UUID()
-        let title: String
+        let category: String
+        let prompt: String
         let icon: String
-        let markets: [Market]
-        var isEmpty: Bool { markets.isEmpty }
+        let answers: [Answer]
+        var isEmpty: Bool { answers.isEmpty }
     }
 
-    func getMarketGroups(for match: Match) -> [MarketGroup] {
-        let o = match.odds
-        var groups: [MarketGroup] = []
+    // MARK: - Combo
 
-        // Helper: only include market if odds exist
-        func m(_ label: String, _ odd: Double?, _ group: String, sub: String? = nil) -> Market? {
-            guard let odd, odd > 1.0 else { return nil }
-            return Market(label, odds: odd, group: group, sublabel: sub)
-        }
-        func markets(_ items: [Market?]) -> [Market] { items.compactMap { $0 } }
+    var totalXP: Int  { lockedAnswers.reduce(0) { $0 + $1.xpValue } }
+    var isCombo: Bool { lockedAnswers.count > 1 }
 
-        // 1. Match Result
-        groups.append(MarketGroup(title: "Match Result", icon: "trophy", markets: markets([
-            m("Home Win",  o?.homeWin,  "result"),
-            m("Draw",      o?.draw,     "result"),
-            m("Away Win",  o?.awayWin,  "result"),
-        ])))
-
-        // 2. Double Chance
-        groups.append(MarketGroup(title: "Double Chance", icon: "shield.lefthalf.filled", markets: markets([
-            m("\(match.home) or Draw", o?.homeOrDraw, "dc"),
-            m("\(match.away) or Draw", o?.awayOrDraw, "dc"),
-            m("\(match.home) or \(match.away)", o?.homeOrAway, "dc"),
-        ])))
-
-        // 3. Draw No Bet
-        groups.append(MarketGroup(title: "Draw No Bet", icon: "arrow.left.arrow.right", markets: markets([
-            m(match.home, o?.dnbHome, "dnb"),
-            m(match.away, o?.dnbAway, "dnb"),
-        ])))
-
-        // 4. Half Time Result
-        groups.append(MarketGroup(title: "Half Time Result", icon: "clock", markets: markets([
-            m("Home Win", o?.htHomeWin, "ht_result"),
-            m("Draw",     o?.htDraw,    "ht_result"),
-            m("Away Win", o?.htAwayWin, "ht_result"),
-        ])))
-
-        // 5. Goals Over/Under (show most popular lines)
-        let goalMarkets: [Market?] = [
-            m("Over 0.5",  o?.over05,  "goals_05"),
-            m("Under 0.5", o?.under05, "goals_05"),
-            m("Over 1.5",  o?.over15,  "goals_15"),
-            m("Under 1.5", o?.under15, "goals_15"),
-            m("Over 2.5",  o?.over25,  "goals_25"),
-            m("Under 2.5", o?.under25, "goals_25"),
-            m("Over 3.5",  o?.over35,  "goals_35"),
-            m("Under 3.5", o?.under35, "goals_35"),
-            m("Over 4.5",  o?.over45,  "goals_45"),
-            m("Under 4.5", o?.under45, "goals_45"),
-        ]
-        groups.append(MarketGroup(title: "Goals Over/Under", icon: "soccerball", markets: markets(goalMarkets)))
-
-        // 6. First Half Goals
-        groups.append(MarketGroup(title: "First Half Goals", icon: "1.circle", markets: markets([
-            m("Over 0.5",  o?.htOver05,  "ht_goals_05"),
-            m("Under 0.5", o?.htUnder05, "ht_goals_05"),
-            m("Over 1.5",  o?.htOver15,  "ht_goals_15"),
-            m("Under 1.5", o?.htUnder15, "ht_goals_15"),
-        ])))
-
-        // 7. Both Teams to Score
-        groups.append(MarketGroup(title: "Both Teams to Score", icon: "arrow.left.and.right.circle", markets: markets([
-            m("Yes", o?.bttsYes, "btts"),
-            m("No",  o?.bttsNo,  "btts"),
-        ])))
-
-        // 8. Corners
-        let cornerMarkets: [Market?] = [
-            m("Over 7.5",  o?.cornersOver75,  "corners_75"),
-            m("Under 7.5", o?.cornersUnder75, "corners_75"),
-            m("Over 8.5",  o?.cornersOver85,  "corners_85"),
-            m("Under 8.5", o?.cornersUnder85, "corners_85"),
-            m("Over 9.5",  o?.cornersOver95,  "corners_95"),
-            m("Under 9.5", o?.cornersUnder95, "corners_95"),
-            m("Over 10.5",  o?.cornersOver105,  "corners_105"),
-            m("Under 10.5", o?.cornersUnder105, "corners_105"),
-        ]
-        groups.append(MarketGroup(title: "Corners", icon: "flag", markets: markets(cornerMarkets)))
-
-        // 9. Cards
-        let cardMarkets: [Market?] = [
-            m("Over 1.5",  o?.cardsOver15,  "cards_15"),
-            m("Under 1.5", o?.cardsUnder15, "cards_15"),
-            m("Over 2.5",  o?.cardsOver25,  "cards_25"),
-            m("Under 2.5", o?.cardsUnder25, "cards_25"),
-            m("Over 3.5",  o?.cardsOver35,  "cards_35"),
-            m("Under 3.5", o?.cardsUnder35, "cards_35"),
-        ]
-        groups.append(MarketGroup(title: "Cards", icon: "rectangle.portrait", markets: markets(cardMarkets)))
-
-        // 10. Clean Sheet
-        groups.append(MarketGroup(title: "Clean Sheet", icon: "lock.shield", markets: markets([
-            m("\(match.home) Clean Sheet", o?.homeCleanSheet, "cs_home"),
-            m("\(match.away) Clean Sheet", o?.awayCleanSheet, "cs_away"),
-        ])))
-
-        // 11. Player — Anytime Goalscorer
-        let anyScorers = (o?.playerAnytime ?? []).compactMap {
-            m($0.name, $0.odd, "player_anytime_\($0.name)")
-        }
-        groups.append(MarketGroup(title: "Anytime Goalscorer", icon: "person.fill.checkmark", markets: anyScorers))
-
-        // 12. Player — First Goalscorer
-        let firstScorers = (o?.playerFirstGoal ?? []).compactMap {
-            m($0.name, $0.odd, "player_first_\($0.name)")
-        }
-        groups.append(MarketGroup(title: "First Goalscorer", icon: "1.circle.fill", markets: firstScorers))
-
-        // 13. Player — Last Goalscorer
-        let lastScorers = (o?.playerLastGoal ?? []).compactMap {
-            m($0.name, $0.odd, "player_last_\($0.name)")
-        }
-        groups.append(MarketGroup(title: "Last Goalscorer", icon: "flag.checkered", markets: lastScorers))
-
-        // 14. Player — To Be Carded
-        let cardedPlayers = (o?.playerToBeCarded ?? []).compactMap {
-            m($0.name, $0.odd, "player_card_\($0.name)")
-        }
-        groups.append(MarketGroup(title: "Player to Be Carded", icon: "rectangle.portrait.fill", markets: cardedPlayers))
-
-        // 15. Player — To Assist
-        let assists = (o?.playerToAssist ?? []).compactMap {
-            m($0.name, $0.odd, "player_assist_\($0.name)")
-        }
-        groups.append(MarketGroup(title: "Player to Assist", icon: "hand.point.right.fill", markets: assists))
-
-        // Filter out empty groups
-        return groups.filter { !$0.isEmpty }
-    }
-
-    // MARK: - Combo Helpers
-
-    var comboPoints: Int { selectedMarkets.reduce(0) { $0 + $1.pointsValue } }
-    var isCombo: Bool { selectedMarkets.count > 1 }
-
-    func toggle(_ market: Market) {
-        if let idx = selectedMarkets.firstIndex(of: market) {
-            selectedMarkets.remove(at: idx)
+    func lockAnswer(_ answer: Answer) {
+        if let idx = lockedAnswers.firstIndex(of: answer) {
+            lockedAnswers.remove(at: idx)
         } else {
-            selectedMarkets.removeAll { $0.group == market.group }
-            selectedMarkets.append(market)
+            lockedAnswers.removeAll { $0.group == answer.group }
+            lockedAnswers.append(answer)
         }
     }
 
-    func isSelected(_ market: Market) -> Bool { selectedMarkets.contains(market) }
-    func isConflicted(_ market: Market) -> Bool {
-        selectedMarkets.contains { $0.group == market.group && $0 != market }
+    func isLocked(_ answer: Answer) -> Bool    { lockedAnswers.contains(answer) }
+    func conflicts(_ answer: Answer) -> Bool   { lockedAnswers.contains { $0.group == answer.group && $0 != answer } }
+    func clearAnswers()                        { lockedAnswers = [] }
+
+    // MARK: - Fallback questions (when API has no odds for a match)
+
+    private func fallbackQuestions(for match: Match) -> [Question] {
+        [
+            Question(
+                category: "⚽ MATCH RESULT",
+                prompt: "Who wins this match?",
+                icon: "trophy",
+                answers: [
+                    Answer("\(match.home) Win", short: "HOME", odds: 2.10, group: "result"),
+                    Answer("Draw",              short: "DRAW", odds: 3.20, group: "result"),
+                    Answer("\(match.away) Win", short: "AWAY", odds: 1.90, group: "result"),
+                ]
+            ),
+            Question(
+                category: "🥅 HOW MANY GOALS?",
+                prompt: "How many goals will be scored?",
+                icon: "soccerball",
+                answers: [
+                    Answer("Fewer than 3 goals", short: "U2.5", odds: 2.00, group: "goals_25"),
+                    Answer("3+ goals",            short: "O2.5", odds: 1.80, group: "goals_25"),
+                ]
+            ),
+            Question(
+                category: "🔀 BOTH TEAMS SCORE?",
+                prompt: "Will both teams get on the scoresheet?",
+                icon: "arrow.left.and.right.circle",
+                answers: [
+                    Answer("Yes — both teams score",  short: "YES", odds: 2.30, group: "btts"),
+                    Answer("No — at least one blank", short: "NO",  odds: 1.60, group: "btts"),
+                ]
+            ),
+        ]
     }
-    func clearSelections() { selectedMarkets = [] }
+
+    // MARK: - Full Questions from Real Odds
+
+    func getQuestions(for match: Match) -> [Question] {
+        let o = match.odds
+        var questions: [Question] = []
+
+        func a(_ label: String, short: String, _ odd: Double?, _ group: String) -> Answer? {
+            guard let odd, odd > 1.0 else { return nil }
+            return Answer(label, short: short, odds: odd, group: group)
+        }
+        func answers(_ items: [Answer?]) -> [Answer] { items.compactMap { $0 } }
+
+        let resultAnswers = answers([
+            a("\(match.home) Win", short: "HOME", o?.homeWin,  "result"),
+            a("Draw",              short: "DRAW", o?.draw,     "result"),
+            a("\(match.away) Win", short: "AWAY", o?.awayWin,  "result"),
+        ])
+        if !resultAnswers.isEmpty { questions.append(Question(category: "⚽ MATCH RESULT", prompt: "Who wins this match?", icon: "trophy", answers: resultAnswers)) }
+
+        let dcAnswers = answers([
+            a("\(match.home) or Draw",  short: "1X", o?.homeOrDraw, "dc"),
+            a("\(match.away) or Draw",  short: "X2", o?.awayOrDraw, "dc"),
+            a("Either team wins",       short: "12", o?.homeOrAway, "dc"),
+        ])
+        if !dcAnswers.isEmpty { questions.append(Question(category: "🛡 DOUBLE CHANCE", prompt: "Which two outcomes can you cover?", icon: "shield.lefthalf.filled", answers: dcAnswers)) }
+
+        let goalAnswers = answers([
+            a("Fewer than 1 goal",  short: "U0.5", o?.under05, "goals_05"),
+            a("At least 1 goal",    short: "O0.5", o?.over05,  "goals_05"),
+            a("Fewer than 2 goals", short: "U1.5", o?.under15, "goals_15"),
+            a("2+ goals",           short: "O1.5", o?.over15,  "goals_15"),
+            a("Fewer than 3 goals", short: "U2.5", o?.under25, "goals_25"),
+            a("3+ goals",           short: "O2.5", o?.over25,  "goals_25"),
+            a("Fewer than 4 goals", short: "U3.5", o?.under35, "goals_35"),
+            a("4+ goals",           short: "O3.5", o?.over35,  "goals_35"),
+            a("5+ goals",           short: "O4.5", o?.over45,  "goals_45"),
+        ])
+        if !goalAnswers.isEmpty { questions.append(Question(category: "🥅 HOW MANY GOALS?", prompt: "How many goals will be scored?", icon: "soccerball", answers: goalAnswers)) }
+
+        let htGoalAnswers = answers([
+            a("No first-half goals", short: "U0.5", o?.htUnder05, "ht_05"),
+            a("1+ first-half goal",  short: "O0.5", o?.htOver05,  "ht_05"),
+            a("2+ first-half goals", short: "O1.5", o?.htOver15,  "ht_15"),
+        ])
+        if !htGoalAnswers.isEmpty { questions.append(Question(category: "⏱ FIRST HALF", prompt: "Goals before half time?", icon: "1.circle", answers: htGoalAnswers)) }
+
+        let bttsAnswers = answers([
+            a("Yes — both teams score",  short: "YES", o?.bttsYes, "btts"),
+            a("No — at least one blank", short: "NO",  o?.bttsNo,  "btts"),
+        ])
+        if !bttsAnswers.isEmpty { questions.append(Question(category: "🔀 BOTH TEAMS SCORE?", prompt: "Will both teams get on the scoresheet?", icon: "arrow.left.and.right.circle", answers: bttsAnswers)) }
+
+        let htResultAnswers = answers([
+            a("\(match.home) leading", short: "HOME", o?.htHomeWin, "ht_result"),
+            a("Level at half time",    short: "DRAW", o?.htDraw,    "ht_result"),
+            a("\(match.away) leading", short: "AWAY", o?.htAwayWin, "ht_result"),
+        ])
+        if !htResultAnswers.isEmpty { questions.append(Question(category: "📊 HALF TIME SCORE", prompt: "Who's leading at half time?", icon: "clock", answers: htResultAnswers)) }
+
+        let cornerAnswers = answers([
+            a("Fewer than 8 corners",  short: "U7.5",  o?.cornersUnder75,  "corners_75"),
+            a("8+ corners",            short: "O7.5",  o?.cornersOver75,   "corners_75"),
+            a("Fewer than 9 corners",  short: "U8.5",  o?.cornersUnder85,  "corners_85"),
+            a("9+ corners",            short: "O8.5",  o?.cornersOver85,   "corners_85"),
+            a("Fewer than 10 corners", short: "U9.5",  o?.cornersUnder95,  "corners_95"),
+            a("10+ corners",           short: "O9.5",  o?.cornersOver95,   "corners_95"),
+            a("11+ corners",           short: "O10.5", o?.cornersOver105,  "corners_105"),
+        ])
+        if !cornerAnswers.isEmpty { questions.append(Question(category: "🚩 CORNERS", prompt: "How many corners in the match?", icon: "flag", answers: cornerAnswers)) }
+
+        let cardAnswers = answers([
+            a("Fewer than 2 cards", short: "U1.5", o?.cardsUnder15, "cards_15"),
+            a("2+ cards",           short: "O1.5", o?.cardsOver15,  "cards_15"),
+            a("Fewer than 3 cards", short: "U2.5", o?.cardsUnder25, "cards_25"),
+            a("3+ cards",           short: "O2.5", o?.cardsOver25,  "cards_25"),
+            a("4+ cards",           short: "O3.5", o?.cardsOver35,  "cards_35"),
+        ])
+        if !cardAnswers.isEmpty { questions.append(Question(category: "🟨 BOOKINGS", prompt: "How many yellow cards will be shown?", icon: "rectangle.portrait", answers: cardAnswers)) }
+
+        let csAnswers = answers([
+            a("\(match.home) keep a clean sheet", short: "HOME", o?.homeCleanSheet, "cs_home"),
+            a("\(match.away) keep a clean sheet", short: "AWAY", o?.awayCleanSheet, "cs_away"),
+        ])
+        if !csAnswers.isEmpty { questions.append(Question(category: "🔒 SHUTOUT", prompt: "Will a team keep a clean sheet?", icon: "lock.shield", answers: csAnswers)) }
+
+        func playerAnswers(_ players: [PlayerOdd]?, group: String) -> [Answer] {
+            (players ?? []).compactMap { p in
+                guard p.odd > 1.0 else { return nil }
+                return Answer(p.name, short: "⚽", odds: p.odd, group: "\(group)_\(p.name)")
+            }
+        }
+
+        let anytime = playerAnswers(o?.playerAnytime, group: "anytime")
+        if !anytime.isEmpty { questions.append(Question(category: "⚽ GOALSCORER", prompt: "Who scores at any point?", icon: "person.fill.checkmark", answers: anytime)) }
+
+        let firstGoal = playerAnswers(o?.playerFirstGoal, group: "first")
+        if !firstGoal.isEmpty { questions.append(Question(category: "🥇 FIRST GOAL", prompt: "Who scores first?", icon: "1.circle.fill", answers: firstGoal)) }
+
+        let carded = playerAnswers(o?.playerToBeCarded, group: "card")
+        if !carded.isEmpty { questions.append(Question(category: "🟨 WHO GETS BOOKED?", prompt: "Which player picks up a card?", icon: "rectangle.portrait.fill", answers: carded)) }
+
+        // ✅ If API returned no odds at all, show fallback questions so match is never empty
+        return questions.isEmpty ? fallbackQuestions(for: match) : questions
+    }
 
     // MARK: - Filtered Matches
 
@@ -205,8 +214,7 @@ final class PredictViewModel: ObservableObject {
         let f1 = ISO8601DateFormatter(); f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let d = f1.date(from: raw) { return d }
         let f2 = ISO8601DateFormatter(); f2.formatOptions = [.withInternetDateTime]
-        if let d = f2.date(from: raw) { return d }
-        return Date()
+        return f2.date(from: raw) ?? Date()
     }
 
     var filteredMatches: [Match] {
@@ -225,13 +233,7 @@ final class PredictViewModel: ObservableObject {
             matches = try await APIManager.fetchAllMatches()
             matchesLoaded = true
             print("✅ Loaded \(matches.count) matches")
-        } catch let DecodingError.keyNotFound(key, _) {
-            errorMessage = "Missing key: \(key.stringValue)"
-        } catch let DecodingError.typeMismatch(type, _) {
-            errorMessage = "Type mismatch: \(type)"
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        } catch { errorMessage = error.localizedDescription }
         isLoading = false
     }
 
@@ -239,26 +241,23 @@ final class PredictViewModel: ObservableObject {
 
     // MARK: - Submit
 
-    func submitPicks(match: Match, myPicksCount: Int) async -> Bool {
-        guard !selectedMarkets.isEmpty else { errorMessage = "Select at least one market"; return false }
-        guard myPicksCount + selectedMarkets.count <= 5 else { errorMessage = "Max 5 picks per day"; return false }
+    func submitPlays(match: Match, myPicksCount: Int) async -> Bool {
+        guard !lockedAnswers.isEmpty else { errorMessage = "Lock in at least one answer"; return false }
+        guard myPicksCount + lockedAnswers.count <= 5 else { errorMessage = "Max 5 plays per day"; return false }
 
         isSubmitting = true; errorMessage = nil
         let comboId = isCombo ? UUID().uuidString : nil
 
         do {
-            for market in selectedMarkets {
+            for answer in lockedAnswers {
                 try await supabaseManager.createPick(
-                    match: match.displayName,
-                    market: market.label,
-                    odds: market.odds,
-                    probability: market.probability,
-                    pointsPossible: market.pointsValue,
-                    pointsLost: max(1, market.pointsValue / 2),
+                    match: match.displayName, market: answer.label,
+                    odds: answer.odds, probability: answer.probability,
+                    pointsPossible: answer.xpValue, pointsLost: max(1, answer.xpValue / 2),
                     comboId: comboId
                 )
             }
-            clearSelections()
+            clearAnswers()
             isSubmitting = false
             return true
         } catch {

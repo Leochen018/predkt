@@ -1,192 +1,278 @@
 import SwiftUI
 
+// MARK: - Predict View
+
 struct PredictView: View {
     @StateObject private var viewModel = PredictViewModel()
-    @State private var showingMarketSheet = false
+    @State private var showingQuestions = false
     @State private var selectedMatch: Match?
     @State private var myPicksCount = 0
 
     var body: some View {
         ZStack {
-            Color(red: 0.05, green: 0.05, blue: 0.08).ignoresSafeArea()
+            Color.predktBg.ignoresSafeArea()
+
             VStack(spacing: 0) {
+                // Header
                 HStack {
-                    Text("Predict")
-                        .font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("PLAY")
+                            .font(.system(size: 13, weight: .black))
+                            .foregroundStyle(Color.predktMuted).kerning(2)
+                        Text("Pick your winners")
+                            .font(.system(size: 20, weight: .black)).foregroundStyle(.white)
+                    }
                     Spacer()
                 }
-                .padding(16)
-                .background(Color(red: 0.1, green: 0.1, blue: 0.12))
+                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
 
+                // Date carousel
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 8) {
                         ForEach(0..<14) { i in
                             let date = Calendar.current.date(byAdding: .day, value: i, to: Date()) ?? Date()
-                            DateItemView(
+                            GameDateChip(
                                 date: date,
-                                isSelected: Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate)
-                            ) { viewModel.selectedDate = date }
+                                isSelected: Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate),
+                                action: { viewModel.selectedDate = date }
+                            )
                         }
                     }
-                    .padding(.horizontal).padding(.vertical, 12)
+                    .padding(.horizontal, 20).padding(.vertical, 10)
                 }
-                .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+                .background(Color.predktCard.opacity(0.5))
 
                 if viewModel.isLoading {
                     Spacer()
-                    ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color(red: 0.42, green: 0.39, blue: 1.0)))
+                    VStack(spacing: 12) {
+                        ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.predktLime))
+                        Text("Loading matches…").font(.system(size: 13)).foregroundStyle(Color.predktMuted)
+                    }
                     Spacer()
                 } else if let error = viewModel.errorMessage {
                     Spacer()
-                    Text(error).foregroundStyle(.red).padding(20)
+                    Text(error).foregroundStyle(Color.predktCoral).padding(20).multilineTextAlignment(.center)
                     Spacer()
                 } else {
-                    ScrollView {
-                        VStack(spacing: 8) {
-                            ForEach(viewModel.filteredMatches, id: \.id) { match in
-                                Button(action: {
-                                    viewModel.clearSelections()
-                                    selectedMatch = match
-                                    showingMarketSheet = true
-                                }) {
-                                    MatchCardView(match: match)
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                            }
-
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 10) {
                             if viewModel.filteredMatches.isEmpty {
-                                VStack(spacing: 12) {
-                                    Image(systemName: "sportscourt").font(.system(size: 40)).foregroundStyle(.gray.opacity(0.3))
-                                    Text("No matches scheduled for the Top 7 Leagues today.")
-                                        .font(.system(size: 13)).foregroundStyle(.gray).multilineTextAlignment(.center)
+                                EmptyMatchesCard()
+                            } else {
+                                HStack {
+                                    Text("\(viewModel.filteredMatches.count) CHALLENGES AVAILABLE")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(Color.predktMuted).kerning(1.5)
+                                    Spacer()
                                 }
-                                .padding(.top, 100).padding(.horizontal, 40)
+                                .padding(.horizontal, 20).padding(.top, 8)
+
+                                ForEach(viewModel.filteredMatches, id: \.id) { match in
+                                    ChallengeCard(match: match) {
+                                        viewModel.clearAnswers()
+                                        selectedMatch = match
+                                        showingQuestions = true
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
                             }
-                            Spacer().frame(height: 20)
+                            Spacer().frame(height: 30)
                         }
-                        .padding(.vertical, 12).padding(.horizontal, 16)
+                        .padding(.top, 8)
                     }
                 }
             }
         }
         .onAppear { Task { await viewModel.loadMatches() } }
-        .sheet(isPresented: $showingMarketSheet) {
+        .sheet(isPresented: $showingQuestions) {
             if let match = selectedMatch {
-                MarketSheetView(match: match, viewModel: viewModel, myPicksCount: myPicksCount, isPresented: $showingMarketSheet)
+                QuestionsSheetView(
+                    match: match,
+                    viewModel: viewModel,
+                    myPicksCount: myPicksCount,
+                    isPresented: $showingQuestions
+                )
             }
         }
     }
 }
 
-// MARK: - Market Sheet
+// MARK: - Challenge Card
 
-struct MarketSheetView: View {
+struct ChallengeCard: View {
+    let match: Match
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 0) {
+                // Top bar
+                HStack(spacing: 6) {
+                    if match.isLive {
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
+                            Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(Color.predktCoral).kerning(1)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Color.predktCoral.opacity(0.12)).cornerRadius(20)
+                    } else {
+                        Text("🕐 \(match.kickoffTime)")
+                            .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
+                    }
+                    Text("·").foregroundStyle(Color.predktMuted)
+                    Text(match.competition)
+                        .font(.system(size: 10)).foregroundStyle(Color.predktMuted).lineLimit(1)
+                    Spacer()
+                    Text("PLAY →")
+                        .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktLime).kerning(1)
+                }
+                .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+
+                // Teams
+                HStack(alignment: .center, spacing: 0) {
+                    VStack(spacing: 8) {
+                        TeamBadgeView(url: match.homeLogo).frame(width: 40, height: 40)
+                        Text(match.home)
+                            .font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                            .lineLimit(2).multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    VStack(spacing: 4) {
+                        if match.isLive || match.isFinished {
+                            Text(match.score)
+                                .font(.system(size: 26, weight: .black)).foregroundStyle(.white)
+                        } else {
+                            Text("VS")
+                                .font(.system(size: 16, weight: .black)).foregroundStyle(Color.predktMuted)
+                        }
+                    }
+                    .frame(width: 56)
+
+                    VStack(spacing: 8) {
+                        TeamBadgeView(url: match.awayLogo).frame(width: 40, height: 40)
+                        Text(match.away)
+                            .font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                            .lineLimit(2).multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 16)
+            }
+            .background(Color.predktCard)
+            .cornerRadius(18)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(match.isLive ? Color.predktCoral.opacity(0.4) : Color.predktBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// MARK: - Questions Sheet
+
+struct QuestionsSheetView: View {
     let match: Match
     @ObservedObject var viewModel: PredictViewModel
     let myPicksCount: Int
     @Binding var isPresented: Bool
 
-    var marketGroups: [PredictViewModel.MarketGroup] {
-        viewModel.getMarketGroups(for: match)
-    }
+    var questions: [PredictViewModel.Question] { viewModel.getQuestions(for: match) }
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Color(red: 0.05, green: 0.05, blue: 0.08).ignoresSafeArea()
+            Color.predktBg.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 // Match header
-                VStack(spacing: 10) {
-                    HStack(spacing: 12) {
-                        TeamBadgeView(url: match.homeLogo)
+                VStack(spacing: 12) {
+                    HStack {
+                        Button(action: { isPresented = false }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.predktMuted)
+                                .padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
+                        }
+                        Spacer()
+                        if match.isLive {
+                            HStack(spacing: 4) {
+                                Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
+                                Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
+                                    .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20).padding(.top, 16)
+
+                    HStack(spacing: 16) {
+                        TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
                         VStack(spacing: 2) {
                             Text(match.displayName)
-                                .font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                                .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
                                 .multilineTextAlignment(.center)
-                            if match.isLive {
-                                Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
-                                    .font(.system(size: 10, weight: .bold)).foregroundStyle(.red)
-                            } else if !match.isFinished {
-                                Text("KO \(match.kickoffTime)")
-                                    .font(.system(size: 10)).foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
-                            }
+                            Text(match.competition)
+                                .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
                         }
-                        TeamBadgeView(url: match.awayLogo)
-                        Spacer()
-                        Button(action: { isPresented = false }) {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.gray).font(.title3)
-                        }
+                        TeamBadgeView(url: match.awayLogo).frame(width: 36, height: 36)
                     }
-                    .padding(.horizontal, 16).padding(.top, 16)
+                    .padding(.horizontal, 20)
 
-                    if !viewModel.selectedMarkets.isEmpty {
-                        ComboBetslipBar(viewModel: viewModel).padding(.horizontal, 16)
+                    if !viewModel.lockedAnswers.isEmpty {
+                        LockedAnswersBanner(viewModel: viewModel).padding(.horizontal, 20)
                     }
                 }
-                .background(Color(red: 0.08, green: 0.08, blue: 0.1))
-                .padding(.bottom, 4)
+                .background(Color.predktCard)
+                .padding(.bottom, 1)
 
-                // All market groups
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        ForEach(marketGroups) { group in
-                            MarketGroupSection(group: group, viewModel: viewModel)
+                    VStack(spacing: 20) {
+                        ForEach(questions) { question in
+                            QuestionCard(question: question, viewModel: viewModel)
                         }
-
-                        if viewModel.isCombo {
-                            HStack(spacing: 6) {
-                                Image(systemName: "info.circle")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
-                                Text("All legs must win for a combo to pay out")
-                                    .font(.system(size: 11)).foregroundStyle(.gray)
-                            }
-                            .padding(10)
-                            .background(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.08))
-                            .cornerRadius(8)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 8)
-                        }
-
-                        Spacer().frame(height: viewModel.selectedMarkets.isEmpty ? 40 : 100)
+                        Spacer().frame(height: viewModel.lockedAnswers.isEmpty ? 40 : 110)
                     }
+                    .padding(.horizontal, 16).padding(.top, 16)
                 }
             }
 
-            // Floating submit button
-            if !viewModel.selectedMarkets.isEmpty {
+            // Floating Lock In button
+            if !viewModel.lockedAnswers.isEmpty {
                 VStack(spacing: 0) {
                     LinearGradient(
-                        colors: [Color(red: 0.05, green: 0.05, blue: 0.08).opacity(0), Color(red: 0.05, green: 0.05, blue: 0.08)],
+                        colors: [Color.predktBg.opacity(0), Color.predktBg],
                         startPoint: .top, endPoint: .bottom
-                    )
-                    .frame(height: 20)
+                    ).frame(height: 24)
 
                     Button(action: {
                         Task {
-                            let success = await viewModel.submitPicks(match: match, myPicksCount: myPicksCount)
+                            let success = await viewModel.submitPlays(match: match, myPicksCount: myPicksCount)
                             if success { isPresented = false }
                         }
                     }) {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(viewModel.isCombo ? "\(viewModel.selectedMarkets.count)-Leg Combo" : "Submit Pick")
-                                    .font(.system(size: 15, weight: .bold))
-                                Text(viewModel.selectedMarkets.map { $0.label }.joined(separator: " + "))
-                                    .font(.system(size: 10)).opacity(0.75).lineLimit(1)
+                                Text(viewModel.isCombo ? "\(viewModel.lockedAnswers.count)-PICK COMBO" : "LOCK IN PLAY")
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundStyle(.black.opacity(0.6)).kerning(1)
+                                Text(viewModel.lockedAnswers.map { $0.shortLabel }.joined(separator: " + "))
+                                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.black).lineLimit(1)
                             }
                             Spacer()
                             if viewModel.isSubmitting {
-                                ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .black))
                             } else {
-                                Text("+\(viewModel.comboPoints) pts")
-                                    .font(.system(size: 18, weight: .black))
+                                HStack(spacing: 4) {
+                                    Text("+\(viewModel.totalXP)")
+                                        .font(.system(size: 22, weight: .black)).foregroundStyle(.black)
+                                    Text("XP").font(.system(size: 14, weight: .black)).foregroundStyle(.black.opacity(0.6))
+                                }
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .frame(height: 60)
-                        .background(Color(red: 0.42, green: 0.39, blue: 1.0))
-                        .foregroundStyle(.white)
+                        .padding(.horizontal, 24).frame(height: 62)
+                        .background(Color.predktLime)
                     }
                     .disabled(viewModel.isSubmitting)
                 }
@@ -197,112 +283,123 @@ struct MarketSheetView: View {
     }
 }
 
-// MARK: - Market Group Section
+// MARK: - Question Card
 
-struct MarketGroupSection: View {
-    let group: PredictViewModel.MarketGroup
+struct QuestionCard: View {
+    let question: PredictViewModel.Question
     @ObservedObject var viewModel: PredictViewModel
     @State private var isExpanded = true
 
-    // Player prop groups use a list layout, others use a grid
-    var isPlayerGroup: Bool {
-        group.markets.first?.group.hasPrefix("player_") ?? false
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
-            // Section header
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: { withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() } }) {
                 HStack(spacing: 8) {
-                    Image(systemName: group.icon)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
-                        .frame(width: 20)
-                    Text(group.title)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
+                    Text(question.category)
+                        .font(.system(size: 10, weight: .black))
+                        .foregroundStyle(Color.predktLime).kerning(1.5)
                     Spacer()
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.gray)
+                        .font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 10)
             }
             .buttonStyle(PlainButtonStyle())
 
             if isExpanded {
-                if isPlayerGroup {
-                    // List layout for player props
-                    VStack(spacing: 6) {
-                        ForEach(group.markets) { market in
-                            PlayerMarketRow(market: market, viewModel: viewModel)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-                } else {
-                    // Grid layout for standard markets
-                    LazyVGrid(
-                        columns: group.markets.count == 2
-                            ? [GridItem(.flexible()), GridItem(.flexible())]
-                            : [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())],
-                        spacing: 8
-                    ) {
-                        ForEach(group.markets) { market in
-                            MarketButton(market: market, viewModel: viewModel)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-                }
-            }
+                Text(question.prompt)
+                    .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.bottom, 14)
 
-            Divider()
-                .background(Color.white.opacity(0.06))
-                .padding(.horizontal, 16)
+                VStack(spacing: 8) {
+                    ForEach(question.answers) { answer in
+                        AnswerPollRow(answer: answer, viewModel: viewModel)
+                    }
+                }
+                .padding(.horizontal, 16).padding(.bottom, 16)
+            }
         }
+        .background(Color.predktCard)
+        .cornerRadius(18)
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.predktBorder, lineWidth: 1))
     }
 }
 
-// MARK: - Standard Market Button
+// MARK: - Answer Poll Row
 
-struct MarketButton: View {
-    let market: PredictViewModel.Market
+struct AnswerPollRow: View {
+    let answer: PredictViewModel.Answer
     @ObservedObject var viewModel: PredictViewModel
 
-    var isSelected: Bool    { viewModel.isSelected(market) }
-    var isConflicted: Bool  { viewModel.isConflicted(market) }
+    var isLocked: Bool     { viewModel.isLocked(answer) }
+    var isConflicted: Bool { viewModel.conflicts(answer) }
 
-    var riskColour: Color {
-        switch market.probability {
-        case 0..<30: return Color(red: 0.94, green: 0.31, blue: 0.31)
-        case 30..<55: return Color(red: 0.95, green: 0.65, blue: 0.18)
-        default:     return Color(red: 0.24, green: 0.78, blue: 0.47)
+    var xpColour: Color {
+        switch answer.probability {
+        case 0..<30: return Color.predktCoral
+        case 30..<55: return Color.predktAmber
+        default:     return Color.predktLime
         }
     }
 
     var body: some View {
-        Button(action: { viewModel.toggle(market) }) {
-            VStack(spacing: 5) {
-                Text(market.label)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isConflicted ? .gray.opacity(0.4) : .white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2).minimumScaleFactor(0.8)
-                Text(market.probabilityDisplay)
-                    .font(.system(size: 14, weight: .black))
-                    .foregroundStyle(isSelected ? .white : riskColour)
-                Text("+\(market.pointsValue)pts")
-                    .font(.system(size: 10))
-                    .foregroundStyle(isSelected ? .white.opacity(0.8) : .gray)
+        Button(action: { if !isConflicted { viewModel.lockAnswer(answer) } }) {
+            ZStack(alignment: .leading) {
+                // Poll fill bar
+                GeometryReader { geo in
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(isLocked ? Color.predktLime.opacity(0.18) : Color.white.opacity(0.04))
+                        .frame(
+                            width: isLocked
+                                ? geo.size.width
+                                : geo.size.width * CGFloat(answer.communityPercent) / 100
+                        )
+                        .animation(.easeOut(duration: 0.3), value: isLocked)
+                }
+
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .stroke(isLocked ? Color.predktLime : Color.white.opacity(0.15), lineWidth: 2)
+                            .frame(width: 22, height: 22)
+                        if isLocked {
+                            Circle().fill(Color.predktLime).frame(width: 14, height: 14)
+                        }
+                    }
+
+                    Text(answer.label)
+                        .font(.system(size: 14, weight: isLocked ? .bold : .medium))
+                        .foregroundStyle(
+                            isLocked ? .white :
+                            isConflicted ? Color.predktMuted.opacity(0.4) :
+                            Color.predktMuted
+                        )
+                        .lineLimit(2)
+
+                    Spacer()
+
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("+\(answer.xpValue) XP")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(isLocked ? Color.predktLime : xpColour)
+                        Text(answer.probabilityDisplay)
+                            .font(.system(size: 10))
+                            .foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 14)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14).padding(.horizontal, 4)
-            .background(isSelected ? Color(red: 0.42, green: 0.39, blue: 1.0) : Color(red: 0.12, green: 0.12, blue: 0.15))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10)
-                .stroke(isSelected ? Color(red: 0.42, green: 0.39, blue: 1.0) : Color.white.opacity(0.06), lineWidth: 1))
+            .frame(height: 52)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.03))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(
+                                isLocked ? Color.predktLime.opacity(0.5) : Color.predktBorder,
+                                lineWidth: 1
+                            )
+                    )
+            )
             .opacity(isConflicted ? 0.35 : 1.0)
         }
         .buttonStyle(PlainButtonStyle())
@@ -310,115 +407,84 @@ struct MarketButton: View {
     }
 }
 
-// MARK: - Player Market Row (list style)
+// MARK: - Locked Answers Banner
 
-struct PlayerMarketRow: View {
-    let market: PredictViewModel.Market
-    @ObservedObject var viewModel: PredictViewModel
-
-    var isSelected: Bool { viewModel.isSelected(market) }
-
-    var body: some View {
-        Button(action: { viewModel.toggle(market) }) {
-            HStack(spacing: 12) {
-                // Player avatar placeholder
-                Circle()
-                    .fill(Color.white.opacity(0.07))
-                    .frame(width: 32, height: 32)
-                    .overlay(
-                        Text(String(market.label.prefix(1)))
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.gray)
-                    )
-
-                Text(market.label)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(market.probabilityDisplay)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(isSelected ? .white : Color(red: 0.42, green: 0.39, blue: 1.0))
-                    Text("+\(market.pointsValue)pts")
-                        .font(.system(size: 10))
-                        .foregroundStyle(isSelected ? .white.opacity(0.7) : .gray)
-                }
-
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.white)
-                        .font(.system(size: 16))
-                }
-            }
-            .padding(.horizontal, 12).padding(.vertical, 10)
-            .background(isSelected ? Color(red: 0.42, green: 0.39, blue: 1.0) : Color(red: 0.12, green: 0.12, blue: 0.15))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10)
-                .stroke(isSelected ? Color(red: 0.42, green: 0.39, blue: 1.0) : Color.white.opacity(0.06), lineWidth: 1))
-        }
-        .buttonStyle(PlainButtonStyle())
-    }
-}
-
-// MARK: - Combo Betslip Bar
-
-struct ComboBetslipBar: View {
+struct LockedAnswersBanner: View {
     @ObservedObject var viewModel: PredictViewModel
 
     var body: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(viewModel.isCombo ? "\(viewModel.selectedMarkets.count)-LEG COMBO" : "SINGLE PICK")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(viewModel.isCombo ? "⚡ \(viewModel.lockedAnswers.count)-PICK COMBO" : "⚡ SINGLE PLAY")
+                    .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktLime).kerning(1)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(viewModel.selectedMarkets) { market in
-                            Text(market.label)
-                                .font(.system(size: 10, weight: .medium)).foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(Color.white.opacity(0.08)).cornerRadius(4)
+                    HStack(spacing: 6) {
+                        ForEach(viewModel.lockedAnswers) { answer in
+                            Text(answer.shortLabel)
+                                .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color.predktLime.opacity(0.15)).cornerRadius(6)
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.predktLime.opacity(0.3), lineWidth: 1))
                         }
                     }
                 }
             }
             Spacer()
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("POTENTIAL").font(.system(size: 8, weight: .bold)).foregroundStyle(.gray)
-                Text("+\(viewModel.comboPoints) pts")
-                    .font(.system(size: 15, weight: .black))
-                    .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
+            HStack(spacing: 2) {
+                Text("+\(viewModel.totalXP)").font(.system(size: 18, weight: .black)).foregroundStyle(Color.predktLime)
+                Text("XP").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.7))
             }
         }
         .padding(12)
-        .background(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.1))
-        .cornerRadius(10)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.3), lineWidth: 1))
-        .padding(.bottom, 8)
+        .background(Color.predktLime.opacity(0.07))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.predktLime.opacity(0.2), lineWidth: 1))
+        .padding(.bottom, 12)
     }
 }
 
-// MARK: - Date Item
+// MARK: - Date Chip
 
-struct DateItemView: View {
+struct GameDateChip: View {
     let date: Date
     let isSelected: Bool
     let action: () -> Void
 
+    var isToday: Bool { Calendar.current.isDateInToday(date) }
+
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Text(date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
-                    .font(.system(size: 10, weight: .bold))
+            VStack(spacing: 3) {
+                Text(isToday ? "TODAY" : date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
+                    .font(.system(size: 8, weight: .black)).kerning(1)
                 Text(date.formatted(.dateTime.day()))
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 17, weight: .black))
             }
-            .foregroundStyle(isSelected ? .white : .gray)
-            .frame(width: 50, height: 65)
-            .background(isSelected ? Color(red: 0.42, green: 0.39, blue: 1.0) : Color(red: 0.15, green: 0.15, blue: 0.18))
-            .cornerRadius(12)
+            .foregroundStyle(isSelected ? .black : Color.predktMuted)
+            .frame(width: 52, height: 60)
+            .background(isSelected ? Color.predktLime : Color.predktCard)
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(isSelected ? Color.clear : Color.predktBorder, lineWidth: 1)
+            )
         }
+    }
+}
+
+// MARK: - Empty State
+
+struct EmptyMatchesCard: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("🏟️").font(.system(size: 48))
+            Text("No challenges today")
+                .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
+            Text("Check another date or follow more leagues in your interests.")
+                .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
+        }
+        .padding(40).frame(maxWidth: .infinity)
+        .background(Color.predktCard).cornerRadius(20)
+        .padding(.horizontal, 20).padding(.top, 60)
     }
 }
