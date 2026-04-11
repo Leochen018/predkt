@@ -1,7 +1,7 @@
 require("dotenv").config();
-const express = require("express");
-const cors    = require("cors");
-const cron    = require("node-cron");
+const express     = require("express");
+const cors        = require("cors");
+const cron        = require("node-cron");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -13,23 +13,19 @@ const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const SB_ANON_KEY    = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const supabaseAdmin    = createClient(SB_URL, SB_SERVICE_KEY);
 const supabaseStandard = createClient(SB_URL, SB_ANON_KEY);
-const API_FOOTBALL_BASE = "https://v3.football.api-sports.io";
+const API_BASE = "https://v3.football.api-sports.io";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CACHE LAYER
-// ─────────────────────────────────────────────────────────────────────────────
-// matchCache: full response, 60 min TTL (was 30)
+// ── CACHE ─────────────────────────────────────────────────────────────────────
 const matchCache = {
   data: null, builtAt: null,
-  ttl: 60 * 60 * 1000,           // ✅ 60 minutes — halves daily API usage
+  ttl: 2 * 60 * 60 * 1000, // ✅ 2 hours — was 1 hour
   isStale() { return !this.data || !this.builtAt || Date.now() - this.builtAt > this.ttl; },
-  set(data)  { this.data = data; this.builtAt = Date.now(); },
+  set(data)  { this.data = data; this.builtAt = Date.now(); console.log(`✅ Cache: ${data.length} matches`); },
   invalidate(){ this.data = null; this.builtAt = null; }
 };
 
-// oddsCache: per fixture, 12 hr TTL (pre-match odds don't change much)
 const oddsCache = new Map();
-const ODDS_TTL  = 12 * 60 * 60 * 1000; // ✅ 12 hours (was 6)
+const ODDS_TTL  = 12 * 60 * 60 * 1000; // 12 hours
 function getCachedOdds(id) {
   const e = oddsCache.get(id);
   if (!e || Date.now() - e.cachedAt > ODDS_TTL) { oddsCache.delete(id); return undefined; }
@@ -37,25 +33,19 @@ function getCachedOdds(id) {
 }
 function setCachedOdds(id, odds) { oddsCache.set(id, { odds, cachedAt: Date.now() }); }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SCORING
-// ─────────────────────────────────────────────────────────────────────────────
+// ── SCORING ───────────────────────────────────────────────────────────────────
 function calcPointsWin(p)       { return Math.max(1, 10 + (100 - Math.min(99, Math.max(1, parseInt(p)||50)))); }
 function calcPointsLoss(p)      { return Math.max(1, Math.round(calcPointsWin(p)/2)); }
-function getStreakMultiplier(s) { return Math.min(1.0 + (Math.max(0, parseInt(s)||0)) * 0.1, 2.0); }
+function getStreakMultiplier(s) { return Math.min(1.0 + Math.max(0, parseInt(s)||0) * 0.1, 2.0); }
 function getDailyBonus(d)       { return (parseInt(d)||0) >= 2 ? 1.2 : 1.0; }
-function updateDailyStreak(profile) {
+function updateDailyStreak(p) {
   const today = new Date().toISOString().split("T")[0];
-  if (profile.last_pick_date === today) return { ...profile, dailyStreakChanged: false };
+  if (p.last_pick_date === today) return { ...p, dailyStreakChanged: false };
   const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
-  const yStr = yesterday.toISOString().split("T")[0];
-  const newDaily = profile.last_pick_date === yStr ? (profile.daily_streak||0)+1 : 1;
-  return { daily_streak: newDaily, best_daily_streak: Math.max(profile.best_daily_streak||0, newDaily), last_pick_date: today, dailyStreakChanged: true };
+  const newDaily = p.last_pick_date === yesterday.toISOString().split("T")[0] ? (p.daily_streak||0)+1 : 1;
+  return { daily_streak: newDaily, best_daily_streak: Math.max(p.best_daily_streak||0, newDaily), last_pick_date: today };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ADMIN MIDDLEWARE
-// ─────────────────────────────────────────────────────────────────────────────
 async function requireAdmin(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth?.startsWith("Bearer ")) return res.status(401).json({ error: "Unauthorized" });
@@ -64,184 +54,140 @@ async function requireAdmin(req, res, next) {
   next();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CONSTANTS
-// ─────────────────────────────────────────────────────────────────────────────
-const TOP_LEAGUE_IDS  = [39,40,45,48,140,143,135,137,78,529,61,94,88,2,3,848,4,32];
+// ── ✅ TOP 7 LEAGUES ONLY ────────────────────────────────────────────────────
+// Was 18 leagues (36+ API calls per rebuild).
+// Now 7 leagues = 7 API calls per rebuild. Cuts usage by ~80%.
+//
+// ID   League
+// 39   Premier League
+// 40   Championship
+// 2    Champions League
+// 3    Europa League
+// 140  La Liga
+// 135  Serie A
+// 78   Bundesliga
+const TOP_LEAGUES = [
+  { id: 39,  name: "Premier League"   },
+  { id: 40,  name: "Championship"     },
+  { id: 2,   name: "Champions League" },
+  { id: 3,   name: "Europa League"    },
+  { id: 140, name: "La Liga"          },
+  { id: 135, name: "Serie A"          },
+  { id: 78,  name: "Bundesliga"       },
+];
+const LEAGUE_IDS = TOP_LEAGUES.map(l => l.id);
+
 const LIVE_STATUSES   = ["1H","HT","2H","ET","BT","P","LIVE","INT"];
 const FINISH_STATUSES = ["FT","AET","PEN","WO","AWD","ABD"];
 
-function dateOffset(days) {
-  const d = new Date(); d.setDate(d.getDate() + days);
+// ── DATE HELPERS ──────────────────────────────────────────────────────────────
+function dateStr(offsetDays = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
   return d.toISOString().split("T")[0];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// API-FOOTBALL HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
+// ✅ Season: Aug-Dec = current year, Jan-Jul = previous year
+function currentSeason() {
+  const now = new Date();
+  return now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1;
+}
+
+// ── API FETCH ─────────────────────────────────────────────────────────────────
 async function apiFetch(path, params = {}) {
   const headers = { "x-apisports-key": process.env.API_FOOTBALL_KEY };
-  const url = `${API_FOOTBALL_BASE}${path}?${new URLSearchParams(params)}`;
+  const url     = `${API_BASE}${path}?${new URLSearchParams(params)}`;
   try {
     const res  = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
     const data = await res.json();
     if (data.errors && Object.keys(data.errors).length) {
-      console.warn(`⚠️ API error [${path}]:`, JSON.stringify(data.errors));
+      console.warn(`⚠️ [${path}]:`, JSON.stringify(data.errors));
     }
     return data.response || [];
   } catch (err) {
-    console.warn(`⚠️ apiFetch failed [${path}]:`, err.message);
+    console.warn(`⚠️ apiFetch [${path}]:`, err.message);
     return [];
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PARSE ODDS — ID-based lookup, name fallback
-// ─────────────────────────────────────────────────────────────────────────────
+// ✅ Fetch fixtures for one league using season + from/to
+// This is the ONLY reliable way to get multi-day fixtures on API-Football Pro
+// One API call per league per rebuild
+async function fetchLeagueFixtures(leagueId) {
+  const season = currentSeason();
+  const from   = dateStr(-1);  // yesterday (captures late finishes)
+  const to     = dateStr(30);  // 30 days ahead
+
+  const fixtures = await apiFetch("/fixtures", { league: leagueId, season, from, to });
+  console.log(`  League ${leagueId}: ${fixtures.length} fixtures (season=${season} ${from}→${to})`);
+  return fixtures;
+}
+
+// ── ODDS ──────────────────────────────────────────────────────────────────────
 function parseBets(bets) {
   const byId   = (id)   => bets.find(b => b.id === id);
   const byName = (name) => bets.find(b => b.name === name);
-  const bet    = (id, fallback) => (id ? byId(id) : null) || (fallback ? byName(fallback) : null);
-
-  const val = (id, valueName, fallback) => {
-    const b = bet(id, fallback);
-    return parseFloat(b?.values?.find(v => v.value === valueName)?.odd) || null;
-  };
-  const playerList = (id, fallback, limit = 12) => {
-    const b = bet(id, fallback);
-    if (!b) return [];
-    return b.values.map(v => ({ name: v.value, odd: parseFloat(v.odd)||0 }))
-      .filter(v => v.odd > 0).sort((a,b) => a.odd-b.odd).slice(0, limit);
-  };
-  const scoreList = (id, fallback, maxOdds = 20, limit = 10) => {
-    const b = bet(id, fallback);
-    if (!b) return [];
-    return b.values.map(v => ({ score: v.value, odd: parseFloat(v.odd)||0 }))
-      .filter(v => v.odd > 0 && v.odd < maxOdds).sort((a,b) => a.odd-b.odd).slice(0, limit);
-  };
-
+  const bet    = (id, fb) => (id ? byId(id) : null) || (fb ? byName(fb) : null);
+  const val    = (id, v, fb) => { const b=bet(id,fb); return parseFloat(b?.values?.find(x=>x.value===v)?.odd)||null; };
+  const pList  = (id, fb, n=12) => { const b=bet(id,fb); if(!b)return []; return b.values.map(v=>({name:v.value,odd:parseFloat(v.odd)||0})).filter(v=>v.odd>0).sort((a,b)=>a.odd-b.odd).slice(0,n); };
+  const sList  = (id, fb, mx=20, n=10) => { const b=bet(id,fb); if(!b)return []; return b.values.map(v=>({score:v.value,odd:parseFloat(v.odd)||0})).filter(v=>v.odd>0&&v.odd<mx).sort((a,b)=>a.odd-b.odd).slice(0,n); };
   return {
-    homeWin: val(1,"Home","Match Winner"), draw: val(1,"Draw","Match Winner"), awayWin: val(1,"Away","Match Winner"),
-    homeWinNoDraw: val(2,"Home","Home/Away"), awayWinNoDraw: val(2,"Away","Home/Away"),
-    bttsYes: val(3,"Yes","Both Teams Score"), bttsNo: val(3,"No","Both Teams Score"),
-    over05: val(4,"Over 0.5","Goals Over/Under"),  under05: val(4,"Under 0.5","Goals Over/Under"),
-    over15: val(4,"Over 1.5","Goals Over/Under"),  under15: val(4,"Under 1.5","Goals Over/Under"),
-    over25: val(4,"Over 2.5","Goals Over/Under"),  under25: val(4,"Under 2.5","Goals Over/Under"),
-    over35: val(4,"Over 3.5","Goals Over/Under"),  under35: val(4,"Under 3.5","Goals Over/Under"),
-    over45: val(4,"Over 4.5","Goals Over/Under"),  under45: val(4,"Under 4.5","Goals Over/Under"),
-    goalsOdd: val(5,"Odd","Goals Odd/Even"),        goalsEven: val(5,"Even","Goals Odd/Even"),
-    homeOver05: val(6,"Over 0.5"),   homeUnder05: val(6,"Under 0.5"),
-    homeOver15: val(6,"Over 1.5"),   homeUnder15: val(6,"Under 1.5"),
-    homeOver25: val(6,"Over 2.5"),   homeUnder25: val(6,"Under 2.5"),
-    awayOver05: val(7,"Over 0.5"),   awayUnder05: val(7,"Under 0.5"),
-    awayOver15: val(7,"Over 1.5"),   awayUnder15: val(7,"Under 1.5"),
-    awayOver25: val(7,"Over 2.5"),   awayUnder25: val(7,"Under 2.5"),
-    bttsFirstHalf:  val(8,"Yes","Both Teams To Score - First Half"),
-    bttsSecondHalf: val(9,"Yes","Both Teams To Score - Second Half"),
-    htHomeWin: val(10,"Home","First Half Winner"), htDraw: val(10,"Draw","First Half Winner"), htAwayWin: val(10,"Away","First Half Winner"),
-    shHomeWin: val(11,"Home","Second Half Winner"), shDraw: val(11,"Draw","Second Half Winner"), shAwayWin: val(11,"Away","Second Half Winner"),
-    homeOrDraw: val(12,"Home/Draw","Double Chance"), awayOrDraw: val(12,"Draw/Away","Double Chance"), homeOrAway: val(12,"Home/Away","Double Chance"),
-    dnbHome: val(13,"Home","Draw No Bet"), dnbAway: val(13,"Away","Draw No Bet"),
-    firstTeamHome: val(14,"Home","First Team to Score"), firstTeamAway: val(14,"Away","First Team to Score"), firstTeamNone: val(14,"No Goal","First Team to Score"),
-    lastTeamHome: val(15,"Home","Last Team to Score"), lastTeamAway: val(15,"Away","Last Team to Score"),
-    correctScores: scoreList(16,"Correct Score"),
-    ahHome05: val(17,"Home -0.5","Asian Handicap"), ahAway05: val(17,"Away -0.5","Asian Handicap"),
-    ahHome15: val(17,"Home -1.5","Asian Handicap"), ahAway15: val(17,"Away -1.5","Asian Handicap"),
-    homeWinToNil: val(18,"Home","Win to Nil"), awayWinToNil: val(18,"Away","Win to Nil"),
-    bttsAndHomeWin: val(19,"Yes/Home")||val(19,"Home/Yes"), bttsAndDraw: val(19,"Yes/Draw")||val(19,"Draw/Yes"), bttsAndAwayWin: val(19,"Yes/Away")||val(19,"Away/Yes"),
-    exactGoals0: val(20,"0","Exact Goals Number"), exactGoals1: val(20,"1","Exact Goals Number"),
-    exactGoals2: val(20,"2","Exact Goals Number"), exactGoals3: val(20,"3","Exact Goals Number"),
-    exactGoals4: val(20,"4","Exact Goals Number"), exactGoals5plus: val(20,"5+","Exact Goals Number"),
-    homeCleanSheet: val(21,"Home","Clean Sheet"), awayCleanSheet: val(21,"Away","Clean Sheet"),
-    htftHomeHome: val(22,"Home/Home","HT/FT"), htftDrawHome: val(22,"Draw/Home","HT/FT"), htftAwayHome: val(22,"Away/Home","HT/FT"),
-    htftHomeDraw: val(22,"Home/Draw","HT/FT"), htftDrawDraw: val(22,"Draw/Draw","HT/FT"), htftAwayDraw: val(22,"Away/Draw","HT/FT"),
-    htftHomeAway: val(22,"Home/Away","HT/FT"), htftDrawAway: val(22,"Draw/Away","HT/FT"), htftAwayAway: val(22,"Away/Away","HT/FT"),
-    cornersOver75:  val(23,"Over 7.5","Total Corners"),   cornersUnder75:  val(23,"Under 7.5","Total Corners"),
-    cornersOver85:  val(23,"Over 8.5","Total Corners"),   cornersUnder85:  val(23,"Under 8.5","Total Corners"),
-    cornersOver95:  val(23,"Over 9.5","Total Corners"),   cornersUnder95:  val(23,"Under 9.5","Total Corners"),
-    cornersOver105: val(23,"Over 10.5","Total Corners"),  cornersUnder105: val(23,"Under 10.5","Total Corners"),
-    htCornersOver35:  val(null,"Over 3.5","First Half Corners"),  htCornersUnder35: val(null,"Under 3.5","First Half Corners"),
-    htCornersOver45:  val(null,"Over 4.5","First Half Corners"),  htCornersUnder45: val(null,"Under 4.5","First Half Corners"),
-    bttsBothHalves: val(24,"Yes","Both Teams Score in Both Halves"),
-    shotsOver85:   val(25,"Over 8.5","Total Shots"),   shotsUnder85:   val(25,"Under 8.5","Total Shots"),
-    shotsOver105:  val(25,"Over 10.5","Total Shots"),  shotsUnder105:  val(25,"Under 10.5","Total Shots"),
-    shotsOver125:  val(25,"Over 12.5","Total Shots"),  shotsUnder125:  val(25,"Under 12.5","Total Shots"),
-    playerFirstGoal:     playerList(26,"First Goalscorer"),
-    playerLastGoal:      playerList(27,"Last Goalscorer"),
-    playerAnytime:       playerList(28,"Anytime Goalscorer"),
-    playerToBeCarded:    playerList(29,"Player To Be Carded"),
-    playerToAssist:      playerList(30,"Player To Assist"),
-    playerShotsOnTarget: playerList(31,"Player Shots on Target", 10),
-    playerToBeFouled:    playerList(32,"Player To Be Fouled"),
-    playerToBeScored2:   playerList(28,"Player To Score 2+ Goals", 8),
-    playerHatTrick:      playerList(28,"Player To Score Hat-trick", 8),
-    homeScoreBothHalves: val(33,"Home","Score in Both Halves"), awayScoreBothHalves: val(33,"Away","Score in Both Halves"),
-    cardsOver15:  val(null,"Over 1.5","Total Bookings"),   cardsUnder15: val(null,"Under 1.5","Total Bookings"),
-    cardsOver25:  val(null,"Over 2.5","Total Bookings"),   cardsUnder25: val(null,"Under 2.5","Total Bookings"),
-    cardsOver35:  val(null,"Over 3.5","Total Bookings"),   cardsUnder35: val(null,"Under 3.5","Total Bookings"),
-    cardsOver45:  val(null,"Over 4.5","Total Bookings"),   cardsUnder45: val(null,"Under 4.5","Total Bookings"),
-    homeGoalsOdd:  val(34,"Odd"), homeGoalsEven: val(34,"Even"),
-    awayGoalsOdd:  val(35,"Odd"), awayGoalsEven: val(35,"Even"),
-    winMarginHome1: val(37,"Home by 1"), winMarginHome2: val(37,"Home by 2"), winMarginHome3: val(37,"Home by 3+")||val(37,"Home by 3"),
-    winMarginAway1: val(37,"Away by 1"), winMarginAway2: val(37,"Away by 2"), winMarginAway3: val(37,"Away by 3+")||val(37,"Away by 3"),
-    winMarginDraw:  val(37,"Draw"),
-    correctScoresHT: scoreList(45,"Correct Score - First Half", 25, 8),
-    correctScoresSH: scoreList(62,"Correct Score - Second Half", 25, 8),
-    htOver05:  val(null,"Over 0.5","First Half Goals"),  htUnder05: val(null,"Under 0.5","First Half Goals"),
-    htOver15:  val(null,"Over 1.5","First Half Goals"),  htUnder15: val(null,"Under 1.5","First Half Goals"),
-    offsidesOver15: val(null,"Over 1.5","Total Offsides"), offsidesUnder15: val(null,"Under 1.5","Total Offsides"),
-    offsidesOver25: val(null,"Over 2.5","Total Offsides"), offsidesUnder25: val(null,"Under 2.5","Total Offsides"),
+    homeWin:val(1,"Home","Match Winner"),draw:val(1,"Draw","Match Winner"),awayWin:val(1,"Away","Match Winner"),
+    homeWinNoDraw:val(2,"Home","Home/Away"),awayWinNoDraw:val(2,"Away","Home/Away"),
+    bttsYes:val(3,"Yes","Both Teams Score"),bttsNo:val(3,"No","Both Teams Score"),
+    over05:val(4,"Over 0.5","Goals Over/Under"),under05:val(4,"Under 0.5","Goals Over/Under"),over15:val(4,"Over 1.5","Goals Over/Under"),under15:val(4,"Under 1.5","Goals Over/Under"),over25:val(4,"Over 2.5","Goals Over/Under"),under25:val(4,"Under 2.5","Goals Over/Under"),over35:val(4,"Over 3.5","Goals Over/Under"),under35:val(4,"Under 3.5","Goals Over/Under"),over45:val(4,"Over 4.5","Goals Over/Under"),under45:val(4,"Under 4.5","Goals Over/Under"),
+    goalsOdd:val(5,"Odd","Goals Odd/Even"),goalsEven:val(5,"Even","Goals Odd/Even"),
+    homeOver05:val(6,"Over 0.5"),homeUnder05:val(6,"Under 0.5"),homeOver15:val(6,"Over 1.5"),homeUnder15:val(6,"Under 1.5"),homeOver25:val(6,"Over 2.5"),homeUnder25:val(6,"Under 2.5"),
+    awayOver05:val(7,"Over 0.5"),awayUnder05:val(7,"Under 0.5"),awayOver15:val(7,"Over 1.5"),awayUnder15:val(7,"Under 1.5"),awayOver25:val(7,"Over 2.5"),awayUnder25:val(7,"Under 2.5"),
+    bttsFirstHalf:val(8,"Yes","Both Teams To Score - First Half"),
+    bttsSecondHalf:val(9,"Yes","Both Teams To Score - Second Half"),
+    htHomeWin:val(10,"Home","First Half Winner"),htDraw:val(10,"Draw","First Half Winner"),htAwayWin:val(10,"Away","First Half Winner"),
+    shHomeWin:val(11,"Home","Second Half Winner"),shDraw:val(11,"Draw","Second Half Winner"),shAwayWin:val(11,"Away","Second Half Winner"),
+    homeOrDraw:val(12,"Home/Draw","Double Chance"),awayOrDraw:val(12,"Draw/Away","Double Chance"),homeOrAway:val(12,"Home/Away","Double Chance"),
+    dnbHome:val(13,"Home","Draw No Bet"),dnbAway:val(13,"Away","Draw No Bet"),
+    firstTeamHome:val(14,"Home","First Team to Score"),firstTeamAway:val(14,"Away","First Team to Score"),firstTeamNone:val(14,"No Goal","First Team to Score"),
+    lastTeamHome:val(15,"Home","Last Team to Score"),lastTeamAway:val(15,"Away","Last Team to Score"),
+    correctScores:sList(16,"Correct Score"),
+    ahHome05:val(17,"Home -0.5","Asian Handicap"),ahAway05:val(17,"Away -0.5","Asian Handicap"),ahHome15:val(17,"Home -1.5","Asian Handicap"),ahAway15:val(17,"Away -1.5","Asian Handicap"),
+    homeWinToNil:val(18,"Home","Win to Nil"),awayWinToNil:val(18,"Away","Win to Nil"),
+    bttsAndHomeWin:val(19,"Yes/Home")||val(19,"Home/Yes"),bttsAndDraw:val(19,"Yes/Draw")||val(19,"Draw/Yes"),bttsAndAwayWin:val(19,"Yes/Away")||val(19,"Away/Yes"),
+    exactGoals0:val(20,"0","Exact Goals Number"),exactGoals1:val(20,"1","Exact Goals Number"),exactGoals2:val(20,"2","Exact Goals Number"),exactGoals3:val(20,"3","Exact Goals Number"),exactGoals4:val(20,"4","Exact Goals Number"),exactGoals5plus:val(20,"5+","Exact Goals Number"),
+    homeCleanSheet:val(21,"Home","Clean Sheet"),awayCleanSheet:val(21,"Away","Clean Sheet"),
+    htftHomeHome:val(22,"Home/Home","HT/FT"),htftDrawHome:val(22,"Draw/Home","HT/FT"),htftAwayHome:val(22,"Away/Home","HT/FT"),htftHomeDraw:val(22,"Home/Draw","HT/FT"),htftDrawDraw:val(22,"Draw/Draw","HT/FT"),htftAwayDraw:val(22,"Away/Draw","HT/FT"),htftHomeAway:val(22,"Home/Away","HT/FT"),htftDrawAway:val(22,"Draw/Away","HT/FT"),htftAwayAway:val(22,"Away/Away","HT/FT"),
+    cornersOver75:val(23,"Over 7.5","Total Corners"),cornersUnder75:val(23,"Under 7.5","Total Corners"),cornersOver85:val(23,"Over 8.5","Total Corners"),cornersUnder85:val(23,"Under 8.5","Total Corners"),cornersOver95:val(23,"Over 9.5","Total Corners"),cornersUnder95:val(23,"Under 9.5","Total Corners"),cornersOver105:val(23,"Over 10.5","Total Corners"),cornersUnder105:val(23,"Under 10.5","Total Corners"),
+    htCornersOver35:val(null,"Over 3.5","First Half Corners"),htCornersUnder35:val(null,"Under 3.5","First Half Corners"),htCornersOver45:val(null,"Over 4.5","First Half Corners"),htCornersUnder45:val(null,"Under 4.5","First Half Corners"),
+    bttsBothHalves:val(24,"Yes","Both Teams Score in Both Halves"),
+    shotsOver85:val(25,"Over 8.5","Total Shots"),shotsUnder85:val(25,"Under 8.5","Total Shots"),shotsOver105:val(25,"Over 10.5","Total Shots"),shotsUnder105:val(25,"Under 10.5","Total Shots"),shotsOver125:val(25,"Over 12.5","Total Shots"),shotsUnder125:val(25,"Under 12.5","Total Shots"),
+    playerFirstGoal:pList(26,"First Goalscorer"),playerLastGoal:pList(27,"Last Goalscorer"),playerAnytime:pList(28,"Anytime Goalscorer"),
+    playerToBeCarded:pList(29,"Player To Be Carded"),playerToAssist:pList(30,"Player To Assist"),
+    playerShotsOnTarget:pList(31,"Player Shots on Target",10),playerToBeFouled:pList(32,"Player To Be Fouled"),
+    playerToBeScored2:pList(28,"Player To Score 2+ Goals",8),playerHatTrick:pList(28,"Player To Score Hat-trick",8),
+    homeScoreBothHalves:val(33,"Home","Score in Both Halves"),awayScoreBothHalves:val(33,"Away","Score in Both Halves"),
+    cardsOver15:val(null,"Over 1.5","Total Bookings"),cardsUnder15:val(null,"Under 1.5","Total Bookings"),cardsOver25:val(null,"Over 2.5","Total Bookings"),cardsUnder25:val(null,"Under 2.5","Total Bookings"),cardsOver35:val(null,"Over 3.5","Total Bookings"),cardsUnder35:val(null,"Under 3.5","Total Bookings"),cardsOver45:val(null,"Over 4.5","Total Bookings"),cardsUnder45:val(null,"Under 4.5","Total Bookings"),
+    homeGoalsOdd:val(34,"Odd"),homeGoalsEven:val(34,"Even"),awayGoalsOdd:val(35,"Odd"),awayGoalsEven:val(35,"Even"),
+    winMarginHome1:val(37,"Home by 1"),winMarginHome2:val(37,"Home by 2"),winMarginHome3:val(37,"Home by 3+")||val(37,"Home by 3"),
+    winMarginAway1:val(37,"Away by 1"),winMarginAway2:val(37,"Away by 2"),winMarginAway3:val(37,"Away by 3+")||val(37,"Away by 3"),winMarginDraw:val(37,"Draw"),
+    correctScoresHT:sList(45,"Correct Score - First Half",25,8),correctScoresSH:sList(62,"Correct Score - Second Half",25,8),
+    htOver05:val(null,"Over 0.5","First Half Goals"),htUnder05:val(null,"Under 0.5","First Half Goals"),htOver15:val(null,"Over 1.5","First Half Goals"),htUnder15:val(null,"Under 1.5","First Half Goals"),
   };
 }
 
-// ✅ OPTIMISATION: Only fetch odds for upcoming fixtures — not live or finished
-// Live matches are already in progress (betting closed)
-// Finished matches don't need odds at all
-async function fetchOddsForFixture(fixture) {
-  const status = fixture.fixture.status.short;
-
-  // ✅ Skip odds for live/finished — saves ~40% of API calls
-  if (LIVE_STATUSES.includes(status) || FINISH_STATUSES.includes(status)) {
-    return null;
-  }
-
-  const fixtureId = fixture.fixture.id;
+async function fetchOddsForId(fixtureId) {
   const cached = getCachedOdds(fixtureId);
   if (cached !== undefined) return cached;
-
   try {
     const headers = { "x-apisports-key": process.env.API_FOOTBALL_KEY };
-    for (const bookmaker of [8, 1, 6, 10, 5]) {
-      const res  = await fetch(`${API_FOOTBALL_BASE}/odds?fixture=${fixtureId}&bookmaker=${bookmaker}`, { headers, signal: AbortSignal.timeout(10000) });
+    for (const bm of [8,1,6,10]) {
+      const res  = await fetch(`${API_BASE}/odds?fixture=${fixtureId}&bookmaker=${bm}`,{headers,signal:AbortSignal.timeout(8000)});
       const data = await res.json();
-      const bets = data.response?.[0]?.bookmakers?.[0]?.bets || [];
-      if (bets.length > 0) {
-        const odds = parseBets(bets);
-        setCachedOdds(fixtureId, odds);
-        return odds;
-      }
+      const bets = data.response?.[0]?.bookmakers?.[0]?.bets||[];
+      if (bets.length>0) { const o=parseBets(bets); setCachedOdds(fixtureId,o); return o; }
     }
-    setCachedOdds(fixtureId, null);
-    return null;
-  } catch (err) {
-    return null;
-  }
+    setCachedOdds(fixtureId,null); return null;
+  } catch { return null; }
 }
 
-// ✅ OPTIMISATION: Larger batches (16), shorter delay (100ms)
-async function fetchOddsInBatches(fixtures, batchSize = 16) {
-  const results = [];
-  for (let i = 0; i < fixtures.length; i += batchSize) {
-    const batch = await Promise.all(
-      fixtures.slice(i, i+batchSize).map(f => fetchOddsForFixture(f))
-    );
-    results.push(...batch);
-    if (i + batchSize < fixtures.length) await new Promise(r => setTimeout(r, 100));
-  }
-  return results;
-}
-
-function mapFixture(f, odds = null) {
+function mapFixture(f, odds=null) {
   return {
     fixtureId:   f.fixture.id,
     home:        f.teams.home.name,
@@ -262,269 +208,242 @@ function mapFixture(f, odds = null) {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BUILD MATCH LIST
-// ✅ Key optimisations:
-//   1. 60 min cache (was 30) — fewer rebuild triggers
-//   2. Skip odds for live/finished fixtures
-//   3. Only fetch upcoming fixtures with from/to — no season param
-//   4. Parallel league fetches
-// ─────────────────────────────────────────────────────────────────────────────
+// ── BUILD MATCH LIST ──────────────────────────────────────────────────────────
+// ✅ API call budget per rebuild:
+//   7 fixture calls (one per league)
+//   + ~20-40 odds calls (today's upcoming only)
+//   = ~30-50 calls per rebuild
+//   At 2hr cache: max ~100 calls/day from rebuilds
+//   Daily budget: 7,500 → leaves plenty for auto-resolve crons
+
 async function buildMatchList() {
   if (!matchCache.isStale()) {
     console.log(`⚡ Cache hit (${matchCache.data.length} matches)`);
     return matchCache.data;
   }
 
-  console.log("🔄 Building match list...");
-  const from = dateOffset(-2);
-  const to   = dateOffset(60);
-  console.log(`📅 Range: ${from} → ${to}`);
+  const season = currentSeason();
+  console.log(`🔄 Building for season=${season}...`);
 
-  // Fetch all leagues in parallel
+  // ✅ 7 API calls — one per league, all parallel
   const leagueResults = await Promise.all(
-    TOP_LEAGUE_IDS.map(id => apiFetch("/fixtures", { league: id, from, to }))
+    LEAGUE_IDS.map(id => fetchLeagueFixtures(id))
   );
 
-  // Fetch live matches separately
+  // Also fetch any live matches
   const liveFixtures = await apiFetch("/fixtures", { live: "all" });
   console.log(`🔴 Live: ${liveFixtures.length}`);
 
-  const allFixtures = [...liveFixtures, ...leagueResults.flat()];
-
   // Deduplicate
   const seen   = new Set();
-  const unique = allFixtures.filter(f => {
+  const unique = [...liveFixtures, ...leagueResults.flat()].filter(f => {
     if (seen.has(f.fixture.id)) return false;
-    seen.add(f.fixture.id);
-    return true;
+    seen.add(f.fixture.id); return true;
   });
-  console.log(`📋 Unique fixtures: ${unique.length}`);
+
+  const days = [...new Set(unique.map(f=>f.fixture.date.slice(0,10)))].sort();
+  console.log(`📋 ${unique.length} fixtures across ${days.length} days: ${days[0]} → ${days[days.length-1]}`);
 
   if (unique.length === 0) {
-    console.error("❌ 0 fixtures — API limit hit or key issue");
-    return [];
+    console.error("❌ 0 fixtures — API limit hit");
+    return matchCache.data || [];
   }
 
-  // ✅ Only fetch odds for upcoming fixtures (not live/finished)
+  // ✅ Odds only for upcoming fixtures (not live/finished)
+  // Also only fetch odds for matches in the next 7 days — further out odds aren't useful yet
+  const cutoff   = new Date(); cutoff.setDate(cutoff.getDate() + 7);
   const upcoming = unique.filter(f => {
-    const s = f.fixture.status.short;
-    return !LIVE_STATUSES.includes(s) && !FINISH_STATUSES.includes(s);
+    if (LIVE_STATUSES.includes(f.fixture.status.short))   return false;
+    if (FINISH_STATUSES.includes(f.fixture.status.short)) return false;
+    if (new Date(f.fixture.date) > cutoff)                return false; // too far ahead
+    return true;
   });
-  const nonUpcoming = unique.filter(f => {
-    const s = f.fixture.status.short;
-    return LIVE_STATUSES.includes(s) || FINISH_STATUSES.includes(s);
-  });
+  const skipped = unique.length - upcoming.length;
 
-  console.log(`🎰 Fetching odds for ${upcoming.length} upcoming (skipping ${nonUpcoming.length} live/finished)...`);
-  const upcomingOdds = await fetchOddsInBatches(upcoming);
-  console.log(`✅ Odds: ${upcomingOdds.filter(Boolean).length}/${upcoming.length}`);
+  console.log(`🎰 Fetching odds for ${upcoming.length} fixtures (skipping ${skipped} live/finished/far-future)`);
 
-  // Map fixtures — upcoming get odds, live/finished get null
-  const upcomingMapped    = upcoming.map((f, i) => mapFixture(f, upcomingOdds[i]));
-  const nonUpcomingMapped = nonUpcoming.map(f => mapFixture(f, null));
+  // Fetch odds in batches
+  const oddsResults = [];
+  for (let i=0; i<upcoming.length; i+=8) {
+    const batch = await Promise.all(upcoming.slice(i,i+8).map(f=>fetchOddsForId(f.fixture.id)));
+    oddsResults.push(...batch);
+    if (i+8<upcoming.length) await new Promise(r=>setTimeout(r,150));
+  }
 
-  const liveMatches = [...upcomingMapped, ...nonUpcomingMapped]
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  // Map everything
+  const upcomingMap  = new Map(upcoming.map((f,i) => [f.fixture.id, oddsResults[i]]));
+  const liveMatches  = unique
+    .map(f => mapFixture(f, upcomingMap.get(f.fixture.id) ?? null))
+    .sort((a,b) => new Date(a.date)-new Date(b.date));
 
   matchCache.set(liveMatches);
-  console.log(`🏁 Done: ${liveMatches.length} matches, ${upcomingOdds.filter(Boolean).length} with odds`);
+  console.log(`✅ Done. Odds: ${oddsResults.filter(Boolean).length}/${upcoming.length} had data`);
   return liveMatches;
 }
 
-async function warmupCache() {
-  console.log("🔥 Warming cache...");
-  try { await buildMatchList(); console.log("✅ Cache ready"); }
-  catch (err) { console.error("❌ Warmup failed:", err.message); }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AUTO-RESOLVE
-// ─────────────────────────────────────────────────────────────────────────────
+// ── AUTO-RESOLVE ──────────────────────────────────────────────────────────────
 function evaluatePick(market, fixture) {
-  const home = fixture.teams.home.name, away = fixture.teams.away.name;
-  const hg = fixture.goals.home ?? 0, ag = fixture.goals.away ?? 0, total = hg + ag;
-  const htH = fixture.score?.halftime?.home ?? 0, htA = fixture.score?.halftime?.away ?? 0;
-  if (!FINISH_STATUSES.includes(fixture.fixture.status.short)) return null;
-  const m = market.toLowerCase();
-  if (m === `${home.toLowerCase()} win`) return hg > ag ? "correct" : "wrong";
-  if (m === "draw") return hg === ag ? "correct" : "wrong";
-  if (m === `${away.toLowerCase()} win`) return ag > hg ? "correct" : "wrong";
-  if (m.includes("or draw") && m.includes(home.toLowerCase())) return hg >= ag ? "correct" : "wrong";
-  if (m.includes("or draw") && m.includes(away.toLowerCase())) return ag >= hg ? "correct" : "wrong";
-  if (m === "either team wins") return hg !== ag ? "correct" : "wrong";
-  const under = m.match(/(?:under|fewer than|0-) (\d+)/);
-  if (under) return total < parseInt(under[1]) ? "correct" : "wrong";
-  const over = m.match(/(\d+)\+ goals?/);
-  if (over) return total >= parseInt(over[1]) ? "correct" : "wrong";
-  const exact = m.match(/exactly (\d+)/);
-  if (exact) return total === parseInt(exact[1]) ? "correct" : "wrong";
-  if (m === "5 or more" || m === "5 or more goals") return total >= 5 ? "correct" : "wrong";
-  if (m === "no goals") return total === 0 ? "correct" : "wrong";
-  const htTotal = htH + htA;
-  if (m.includes("no") && m.includes("1st half")) return htTotal === 0 ? "correct" : "wrong";
-  if (m.includes("1+") && m.includes("1st half")) return htTotal >= 1 ? "correct" : "wrong";
-  if (m.includes("2+") && m.includes("1st half")) return htTotal >= 2 ? "correct" : "wrong";
-  if (m.startsWith("yes") && m.includes("both")) return hg > 0 && ag > 0 ? "correct" : "wrong";
-  if (m.startsWith("no")  && m.includes("blank")) return hg === 0 || ag === 0 ? "correct" : "wrong";
-  if (m.includes("leading") && m.includes(home.toLowerCase())) return htH > htA ? "correct" : "wrong";
-  if (m.includes("level at")) return htH === htA ? "correct" : "wrong";
-  if (m.includes("leading") && m.includes(away.toLowerCase())) return htA > htH ? "correct" : "wrong";
-  if (m.includes("clean sheet") && m.includes(home.toLowerCase())) return ag === 0 ? "correct" : "wrong";
-  if (m.includes("clean sheet") && m.includes(away.toLowerCase())) return hg === 0 ? "correct" : "wrong";
-  const score = m.match(/^(\d+)-(\d+)$/);
-  if (score) return parseInt(score[1]) === hg && parseInt(score[2]) === ag ? "correct" : "wrong";
-  if (m === "goals odd")  return total % 2 !== 0 ? "correct" : "wrong";
-  if (m === "goals even") return total % 2 === 0 ? "correct" : "wrong";
+  const home=fixture.teams.home.name,away=fixture.teams.away.name;
+  const hg=fixture.goals.home??0,ag=fixture.goals.away??0,total=hg+ag;
+  const htH=fixture.score?.halftime?.home??0,htA=fixture.score?.halftime?.away??0;
+  if(!FINISH_STATUSES.includes(fixture.fixture.status.short)) return null;
+  const m=market.toLowerCase();
+  if(m===`${home.toLowerCase()} win`) return hg>ag?"correct":"wrong";
+  if(m==="draw") return hg===ag?"correct":"wrong";
+  if(m===`${away.toLowerCase()} win`) return ag>hg?"correct":"wrong";
+  if(m.includes("or draw")&&m.includes(home.toLowerCase())) return hg>=ag?"correct":"wrong";
+  if(m.includes("or draw")&&m.includes(away.toLowerCase())) return ag>=hg?"correct":"wrong";
+  const under=m.match(/(?:under|0-) (\d+)/); if(under) return total<parseInt(under[1])?"correct":"wrong";
+  const over=m.match(/(\d+)\+/); if(over) return total>=parseInt(over[1])?"correct":"wrong";
+  const exact=m.match(/exactly (\d+)/); if(exact) return total===parseInt(exact[1])?"correct":"wrong";
+  if(m==="no goals") return total===0?"correct":"wrong";
+  if(m.startsWith("yes")&&m.includes("both")) return hg>0&&ag>0?"correct":"wrong";
+  if(m.startsWith("no")&&m.includes("blank")) return hg===0||ag===0?"correct":"wrong";
+  if(m.includes("leading")&&m.includes(home.toLowerCase())) return htH>htA?"correct":"wrong";
+  if(m.includes("level at")) return htH===htA?"correct":"wrong";
+  if(m.includes("leading")&&m.includes(away.toLowerCase())) return htA>htH?"correct":"wrong";
+  if(m.includes("clean sheet")&&m.includes(home.toLowerCase())) return ag===0?"correct":"wrong";
+  if(m.includes("clean sheet")&&m.includes(away.toLowerCase())) return hg===0?"correct":"wrong";
+  const score=m.match(/^(\d+)-(\d+)$/); if(score) return parseInt(score[1])===hg&&parseInt(score[2])===ag?"correct":"wrong";
+  if(m==="goals odd") return total%2!==0?"correct":"wrong";
+  if(m==="goals even") return total%2===0?"correct":"wrong";
   return null;
 }
 
 async function resolvePicksForMatch(fixture) {
-  const { data: picks } = await supabaseAdmin.from("picks").select("*").eq("result","pending")
-    .ilike("match", `%${fixture.teams.home.name}%`);
-  if (!picks?.length) return 0;
-  let resolved = 0;
-  for (const pick of picks) {
-    if (!pick.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase())) continue;
-    const result = evaluatePick(pick.market, fixture);
-    if (!result) continue;
-    const prob = pick.probability || Math.min(99, Math.max(1, Math.round(100.0 / (pick.odds||2.0))));
-    const { data: profile } = await supabaseAdmin.from("profiles").select("*").eq("id", pick.user_id).single();
-    if (!profile) continue;
-    let newStreak = 0, finalPoints = 0;
-    if (result === "correct") {
-      newStreak   = (profile.current_streak||0) + 1;
-      finalPoints = Math.round(calcPointsWin(prob) * getStreakMultiplier(newStreak) * getDailyBonus(profile.daily_streak));
-    } else { finalPoints = -calcPointsLoss(prob); }
-    const du = updateDailyStreak(profile);
-    await supabaseAdmin.from("picks").update({ result, points_earned: finalPoints }).eq("id", pick.id);
-    await supabaseAdmin.from("profiles").update({
-      current_streak: result==="correct" ? newStreak : 0,
-      best_streak: Math.max(profile.best_streak||0, newStreak),
-      total_points: (profile.total_points||0) + finalPoints,
-      weekly_points: (profile.weekly_points||0) + finalPoints,
-      daily_streak: du.daily_streak, best_daily_streak: du.best_daily_streak, last_pick_date: du.last_pick_date,
-    }).eq("id", pick.user_id);
+  const{data:picks}=await supabaseAdmin.from("picks").select("*").eq("result","pending").ilike("match",`%${fixture.teams.home.name}%`);
+  if(!picks?.length) return 0;
+  let resolved=0;
+  for(const pick of picks){
+    if(!pick.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase())) continue;
+    const result=evaluatePick(pick.market,fixture); if(!result) continue;
+    const prob=pick.probability||Math.min(99,Math.max(1,Math.round(100.0/(pick.odds||2.0))));
+    const{data:profile}=await supabaseAdmin.from("profiles").select("*").eq("id",pick.user_id).single();
+    if(!profile) continue;
+    let ns=0,fp=0;
+    if(result==="correct"){ns=(profile.current_streak||0)+1;fp=Math.round(calcPointsWin(prob)*getStreakMultiplier(ns)*getDailyBonus(profile.daily_streak));}
+    else{fp=-calcPointsLoss(prob);}
+    const du=updateDailyStreak(profile);
+    await supabaseAdmin.from("picks").update({result,points_earned:fp}).eq("id",pick.id);
+    await supabaseAdmin.from("profiles").update({current_streak:result==="correct"?ns:0,best_streak:Math.max(profile.best_streak||0,ns),total_points:(profile.total_points||0)+fp,weekly_points:(profile.weekly_points||0)+fp,daily_streak:du.daily_streak,best_daily_streak:du.best_daily_streak,last_pick_date:du.last_pick_date}).eq("id",pick.user_id);
     resolved++;
   }
   return resolved;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ROUTES
-// ─────────────────────────────────────────────────────────────────────────────
+// ── ROUTES ────────────────────────────────────────────────────────────────────
 app.get("/", (req,res) => res.send("Predkt API 🚀"));
 
-app.get("/api/debug", async (req,res) => {
-  if (!process.env.API_FOOTBALL_KEY) return res.json({ error: "API_FOOTBALL_KEY missing" });
+app.get("/api/debug", async(req,res)=>{
+  if(!process.env.API_FOOTBALL_KEY) return res.json({error:"API_FOOTBALL_KEY missing"});
   try {
-    const headers = { "x-apisports-key": process.env.API_FOOTBALL_KEY };
-    const from = dateOffset(-2), to = dateOffset(7);
-    const [fixtures, status] = await Promise.all([
-      fetch(`${API_FOOTBALL_BASE}/fixtures?league=39&from=${from}&to=${to}`, { headers }).then(r => r.json()),
-      fetch(`${API_FOOTBALL_BASE}/status`, { headers }).then(r => r.json()),
+    const season  = currentSeason();
+    const headers = {"x-apisports-key":process.env.API_FOOTBALL_KEY};
+    const [test, status] = await Promise.all([
+      // Test Premier League with correct params
+      fetch(`${API_BASE}/fixtures?league=39&season=${season}&from=${dateStr(0)}&to=${dateStr(7)}`,{headers}).then(r=>r.json()),
+      fetch(`${API_BASE}/status`,{headers}).then(r=>r.json()),
     ]);
     res.json({
-      apiKeyPresent:  true,
-      apiKeyPrefix:   process.env.API_FOOTBALL_KEY.slice(0,8) + "...",
-      plan:           status.response?.subscription?.plan ?? "unknown",
-      requestsToday:  status.response?.requests?.current ?? "?",
-      requestsLimit:  status.response?.requests?.limit_day ?? "?",
-      fixturesFound:  fixtures.response?.length ?? 0,
-      apiErrors:      fixtures.errors ?? null,
-      dateRange:      `${from} to ${to}`,
-      cacheStale:     matchCache.isStale(),
-      cachedCount:    matchCache.data?.length ?? 0,
-      sample: fixtures.response?.slice(0,2).map(f => ({
-        date: f.fixture.date, status: f.fixture.status.short,
-        home: f.teams.home.name, away: f.teams.away.name,
-      })) ?? [],
+      season,
+      plan:          status.response?.subscription?.plan??"?",
+      requests:      `${status.response?.requests?.current??0}/${status.response?.requests?.limit_day??0}`,
+      plFixtures:    test.response?.length??0,
+      errors:        test.errors??null,
+      cacheSize:     matchCache.data?.length??0,
+      cacheStale:    matchCache.isStale(),
+      cachedDays:    matchCache.data ? [...new Set(matchCache.data.map(m=>m.date.slice(0,10)))].sort() : [],
+      leagues:       TOP_LEAGUES,
+      sample:        test.response?.slice(0,3).map(f=>({date:f.fixture.date,home:f.teams.home.name,away:f.teams.away.name}))??[],
     });
-  } catch (err) { res.json({ error: err.message }); }
+  }catch(err){res.json({error:err.message});}
 });
 
-app.get("/api/live", async (req,res) => {
-  try {
-    const fixtures = await apiFetch("/fixtures", { live: "all" });
-    res.json({ liveMatches: fixtures.map(f => mapFixture(f)) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+app.get("/api/matches", async(req,res)=>{
+  try { res.json({liveMatches:await buildMatchList()}); }
+  catch(err){ console.error("❌",err.message); res.status(500).json({error:err.message}); }
 });
 
-app.get("/api/matches", async (req,res) => {
-  try {
-    res.json({ liveMatches: await buildMatchList() });
-  } catch (err) {
-    console.error("❌ /api/matches:", err.message);
-    res.status(500).json({ error: err.message });
-  }
+// ✅ Lazy odds endpoint — called per match when user taps
+app.get("/api/odds/:fixtureId", async(req,res)=>{
+  const id=parseInt(req.params.fixtureId);
+  if(!id) return res.status(400).json({error:"Invalid ID"});
+  const fixture=matchCache.data?.find(f=>f.fixtureId===id);
+  if(fixture&&(fixture.isLive||fixture.isFinished)) return res.json({odds:null});
+  try{
+    const odds=await fetchOddsForId(id);
+    res.set("Cache-Control","public, max-age=3600");
+    res.json({odds});
+  }catch(err){res.status(500).json({error:err.message});}
 });
 
-app.post("/api/refresh-cache", requireAdmin, async (req,res) => {
+app.get("/api/live", async(req,res)=>{
+  try{
+    const f=await apiFetch("/fixtures",{live:"all"});
+    res.json({liveMatches:f.map(x=>mapFixture(x))});
+  }catch(err){res.status(500).json({error:err.message});}
+});
+
+app.post("/api/refresh-cache", requireAdmin, async(req,res)=>{
   matchCache.invalidate(); oddsCache.clear();
-  try { await buildMatchList(); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  try{await buildMatchList(); res.json({ok:true});}
+  catch(err){res.status(500).json({error:err.message});}
 });
 
-app.post("/api/auto-resolve", async (req,res) => {
-  try {
-    const fixtures = await apiFetch("/fixtures", { status: "FT", last: 50 });
-    let total = 0;
-    for (const f of fixtures) { total += await resolvePicksForMatch(f); }
-    res.json({ ok: true, resolved: total });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+app.post("/api/auto-resolve", async(req,res)=>{
+  try{
+    const f=await apiFetch("/fixtures",{status:"FT",last:30});
+    let t=0; for(const x of f){t+=await resolvePicksForMatch(x);}
+    res.json({ok:true,resolved:t});
+  }catch(err){res.status(500).json({error:err.message});}
 });
 
-app.post("/api/resolve", requireAdmin, async (req,res) => {
-  const { pickId, result } = req.body;
-  const { data: pick }    = await supabaseAdmin.from("picks").select("*").eq("id",pickId).single();
-  const { data: profile } = await supabaseAdmin.from("profiles").select("*").eq("id",pick.user_id).single();
-  const prob = pick.probability || Math.min(99,Math.max(1,Math.round(100.0/(pick.odds||2.0))));
-  let newStreak=0, finalPoints=0;
-  if (result==="correct") { newStreak=(profile.current_streak||0)+1; finalPoints=Math.round(calcPointsWin(prob)*getStreakMultiplier(newStreak)*getDailyBonus(profile.daily_streak)); }
-  else { finalPoints = -calcPointsLoss(prob); }
-  const du = updateDailyStreak(profile);
-  await supabaseAdmin.from("picks").update({ result, points_earned: finalPoints }).eq("id",pickId);
-  await supabaseAdmin.from("profiles").update({ current_streak:result==="correct"?newStreak:0, best_streak:Math.max(profile.best_streak||0,newStreak), total_points:(profile.total_points||0)+finalPoints, weekly_points:(profile.weekly_points||0)+finalPoints, daily_streak:du.daily_streak, best_daily_streak:du.best_daily_streak, last_pick_date:du.last_pick_date }).eq("id",pick.user_id);
-  res.json({ ok: true });
+app.post("/api/resolve", requireAdmin, async(req,res)=>{
+  const{pickId,result}=req.body;
+  const{data:pick}=await supabaseAdmin.from("picks").select("*").eq("id",pickId).single();
+  const{data:profile}=await supabaseAdmin.from("profiles").select("*").eq("id",pick.user_id).single();
+  const prob=pick.probability||Math.min(99,Math.max(1,Math.round(100.0/(pick.odds||2.0))));
+  let ns=0,fp=0;
+  if(result==="correct"){ns=(profile.current_streak||0)+1;fp=Math.round(calcPointsWin(prob)*getStreakMultiplier(ns)*getDailyBonus(profile.daily_streak));}
+  else{fp=-calcPointsLoss(prob);}
+  const du=updateDailyStreak(profile);
+  await supabaseAdmin.from("picks").update({result,points_earned:fp}).eq("id",pickId);
+  await supabaseAdmin.from("profiles").update({current_streak:result==="correct"?ns:0,best_streak:Math.max(profile.best_streak||0,ns),total_points:(profile.total_points||0)+fp,weekly_points:(profile.weekly_points||0)+fp,daily_streak:du.daily_streak,best_daily_streak:du.best_daily_streak,last_pick_date:du.last_pick_date}).eq("id",pick.user_id);
+  res.json({ok:true});
 });
 
-app.post("/api/weekly-reset", requireAdmin, async (req,res) => {
-  try { await supabaseAdmin.rpc("reset_weekly_points"); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+app.post("/api/weekly-reset", requireAdmin, async(req,res)=>{
+  try{await supabaseAdmin.rpc("reset_weekly_points");res.json({ok:true});}
+  catch(err){res.status(500).json({error:err.message});}
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CRONS
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Auto-resolve every 15 min
-cron.schedule("*/15 * * * *", async () => {
-  try {
-    const fixtures = await apiFetch("/fixtures", { status: "FT", last: 50 });
-    let total = 0;
-    for (const f of fixtures) { total += await resolvePicksForMatch(f); }
-    if (total > 0) console.log(`⏰ Resolved ${total} picks`);
-  } catch (err) { console.error("❌ Auto-resolve:", err.message); }
+// ── CRONS ─────────────────────────────────────────────────────────────────────
+// ✅ Auto-resolve every 20 min (was 15) — saves ~72 calls/day
+cron.schedule("*/20 * * * *", async()=>{
+  try{
+    const f=await apiFetch("/fixtures",{status:"FT",last:20});
+    let t=0; for(const x of f){t+=await resolvePicksForMatch(x);}
+    if(t>0) console.log(`⏰ Resolved ${t}`);
+  }catch(err){console.error("❌ Auto-resolve:",err.message);}
 });
 
-// ✅ Cache rebuild every 60 min (matches cache TTL)
-cron.schedule("0 * * * *", async () => {
+// ✅ Cache rebuild every 2 hours (was every hour) — saves ~60 calls/day
+cron.schedule("0 */2 * * *", async()=>{
   matchCache.invalidate();
-  try { await buildMatchList(); console.log("✅ Cache rebuilt"); }
-  catch (err) { console.error("❌ Cache rebuild:", err.message); }
+  try{await buildMatchList();}catch(err){console.error("❌ Cache:",err.message);}
 });
 
-// Weekly XP reset Monday midnight UTC
-cron.schedule("0 0 * * 1", async () => {
-  try { await supabaseAdmin.rpc("reset_weekly_points"); console.log("✅ Weekly reset"); }
-  catch (err) { console.error("❌ Weekly reset:", err.message); }
+// Weekly reset Monday midnight
+cron.schedule("0 0 * * 1", async()=>{
+  try{await supabaseAdmin.rpc("reset_weekly_points");console.log("✅ Weekly reset");}
+  catch(err){console.error("❌",err.message);}
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// START
-// ─────────────────────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, "0.0.0.0", () => {
+// ── START ─────────────────────────────────────────────────────────────────────
+const PORT=process.env.PORT||8080;
+app.listen(PORT,"0.0.0.0",()=>{
   console.log(`✅ Predkt API on port ${PORT}`);
-  setTimeout(warmupCache, 3000);
+  // ✅ Wait until midnight UTC resets before warming if limit is close
+  // Just build immediately — if limit is hit it returns stale cache gracefully
+  setTimeout(()=>buildMatchList(), 3000);
 });
