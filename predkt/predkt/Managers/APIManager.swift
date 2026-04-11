@@ -1,75 +1,94 @@
 import Foundation
 
-struct APIManager {
+struct LiveResponse: Codable {
+    let liveMatches: [LiveMatchResponse]
+}
+
+final class APIManager {
     static let baseURL = "https://api.predkt.app"
 
-    // 1. Updated to match the nested structure of API-Football
-    struct LiveResponse: Codable {
-        let liveMatches: [LiveMatchResponse]
+    // ── Local disk cache ──────────────────────────────────────────────────────
+    // Stores the last successful response to disk.
+    // On next launch the app shows cached data instantly while refreshing in background.
+
+    private static let cacheFile: URL = {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("matches_cache.json")
+    }()
+
+    private static let cacheTTL: TimeInterval = 60 * 60 // 1 hour
+
+    private static func loadDiskCache() -> [Match]? {
+        guard let data = try? Data(contentsOf: cacheFile),
+              let wrapper = try? JSONDecoder().decode(CacheWrapper.self, from: data),
+              Date().timeIntervalSince(wrapper.savedAt) < cacheTTL
+        else { return nil }
+        return wrapper.matches
     }
 
-    static func fetchLiveMatches() async throws -> [Match] {
-        let urlString = "\(baseURL)/api/live"
-        print("DEBUG: Attempting to fetch from: \(urlString)") // Check the URL
-        
-        guard let url = URL(string: urlString) else { throw URLError(.badURL) }
-
-        // Use a simpler data fetch to ensure we see the result even if it's weird
-        let (data, response) = try await URLSession.shared.data(from: url)
-        
-        // FORCE PRINT: This bypasses any decoding logic
-        print("--- RAW DATA RECEIVED: \(data.count) bytes ---")
-        if let str = String(data: data, encoding: .utf8) {
-            print("DEBUG_JSON_BODY: \(str)")
+    private static func saveDiskCache(_ matches: [Match]) {
+        let wrapper = CacheWrapper(matches: matches, savedAt: Date())
+        if let data = try? JSONEncoder().encode(wrapper) {
+            try? data.write(to: cacheFile, options: .atomic)
         }
-        
-        // Now check the response code
-        if let httpResponse = response as? HTTPURLResponse {
-            print("DEBUG: HTTP Status Code: \(httpResponse.statusCode)")
-        }
-        
-        // The app likely crashes right here:
-        let decodedResponse = try JSONDecoder().decode(LiveResponse.self, from: data)
-        return decodedResponse.liveMatches.map { $0.toMatch() }
     }
-    // 3. Updated to fetch all matches for the calendar
+
+    private struct CacheWrapper: Codable {
+        let matches: [Match]
+        let savedAt: Date
+    }
+
+    // ── Fetch with stale-while-revalidate ────────────────────────────────────
+    // Returns cached data immediately, then fetches fresh in background.
+    // ViewModel gets two updates: instant cached, then fresh.
+
     static func fetchAllMatches() async throws -> [Match] {
-        guard let url = URL(string: "\(baseURL)/api/matches") else { throw URLError(.badURL) }
+        // 1. Try disk cache first for instant display
+        if let cached = loadDiskCache() {
+            // Return cached now, refresh in background
+            Task.detached(priority: .background) {
+                _ = try? await fetchFresh()
+            }
+            return cached
+        }
+        // 2. No cache — fetch fresh (first launch)
+        return try await fetchFresh()
+    }
 
-        // ✅ Increase timeout to 60 seconds — first cache build takes time
+    @discardableResult
+    static func fetchFresh() async throws -> [Match] {
+        guard let url = URL(string: "\(baseURL)/api/matches") else {
+            throw URLError(.badURL)
+        }
+
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForRequest  = 90   // Railway cold start can take 60s
         config.timeoutIntervalForResource = 120
         let session = URLSession(configuration: config)
 
         let (data, response) = try await session.data(from: url)
 
-        if let httpResponse = response as? HTTPURLResponse {
-            print("DEBUG: HTTP Status: \(httpResponse.statusCode)")
-        }
-        if let str = String(data: data, encoding: .utf8) {
-            print("DEBUG_MATCHES: \(str.prefix(500))")
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw URLError(.badServerResponse)
         }
 
-        let decoded = try JSONDecoder().decode(LiveResponse.self, from: data)
-        return decoded.liveMatches.map { $0.toMatch() }
+        // Log raw response size for debugging
+        print("📦 Response: \(data.count / 1024)KB")
+
+        let decoded  = try JSONDecoder().decode(LiveResponse.self, from: data)
+        let matches  = decoded.liveMatches.map { $0.toMatch() }
+
+        // Log date spread
+        let dates = Set(matches.map { String($0.rawDate.prefix(10)) }).sorted()
+        print("✅ Fetched \(matches.count) matches across \(dates.count) days: \(dates.first ?? "?") → \(dates.last ?? "?")")
+
+        // Save to disk cache
+        saveDiskCache(matches)
+        return matches
     }
 
-    static func verifyEmail(userId: String, token: String) async throws {
-        guard let url = URL(string: "\(baseURL)/api/verify-email") else {
-            throw URLError(.badURL)
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: String] = ["userId": userId, "token": token]
-        request.httpBody = try JSONEncoder().encode(body)
-
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw NSError(domain: "Verification failed", code: -1)
-        }
+    // Force refresh — ignores disk cache
+    static func forceRefresh() async throws -> [Match] {
+        return try await fetchFresh()
     }
 }

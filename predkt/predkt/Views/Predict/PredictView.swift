@@ -10,35 +10,43 @@ struct PredictView: View {
     var body: some View {
         ZStack {
             Color.predktBg.ignoresSafeArea()
-
             VStack(spacing: 0) {
-                // Header
+
+                // ── Header ─────────────────────────────────────────────────
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("PLAY")
-                            .font(.system(size: 13, weight: .black))
+                        Text("PLAY").font(.system(size: 13, weight: .black))
                             .foregroundStyle(Color.predktMuted).kerning(2)
-                        Text("Pick your winners")
-                            .font(.system(size: 20, weight: .black)).foregroundStyle(.white)
+                        Text("Pick your winners").font(.system(size: 20, weight: .black)).foregroundStyle(.white)
                     }
                     Spacer()
                     Button(action: { Task { await viewModel.refreshMatches() } }) {
-                        Image(systemName: "arrow.clockwise")
-                            .foregroundStyle(Color.predktMuted).font(.system(size: 15))
+                        Image(systemName: "arrow.clockwise").foregroundStyle(Color.predktMuted).font(.system(size: 15))
                     }
                 }
                 .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
 
-                // Date carousel
+                // ── Date Carousel ──────────────────────────────────────────
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            ForEach(0..<60) { i in
-                                let date = Calendar.current.date(byAdding: .day, value: i, to: Date()) ?? Date()
+                            ForEach(0..<90, id: \.self) { i in
+                                let date = Calendar.current.date(
+                                    byAdding: .day, value: i,
+                                    to: Calendar.current.startOfDay(for: Date())
+                                ) ?? Date()
+                                let isSelected = Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate)
+                                let hasMatches = viewModel.hasMatches(on: date)
+
                                 GameDateChip(
                                     date: date,
-                                    isSelected: Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate),
-                                    action: { viewModel.selectedDate = date }
+                                    isSelected: isSelected,
+                                    hasMatches: hasMatches,
+                                    action: {
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            viewModel.selectedDate = date
+                                        }
+                                    }
                                 )
                                 .id(i)
                             }
@@ -46,16 +54,14 @@ struct PredictView: View {
                         .padding(.horizontal, 20).padding(.vertical, 10)
                     }
                     .onChange(of: viewModel.selectedDate) {
-                        let days = Calendar.current.dateComponents(
-                            [.day],
-                            from: Calendar.current.startOfDay(for: Date()),
-                            to: Calendar.current.startOfDay(for: viewModel.selectedDate)
-                        ).day ?? 0
+                        let today = Calendar.current.startOfDay(for: Date())
+                        let days  = Calendar.current.dateComponents([.day], from: today, to: viewModel.selectedDate).day ?? 0
                         withAnimation { proxy.scrollTo(max(0, days), anchor: .center) }
                     }
                 }
                 .background(Color.predktCard.opacity(0.5))
 
+                // ── Content ────────────────────────────────────────────────
                 if viewModel.isLoading {
                     Spacer()
                     VStack(spacing: 12) {
@@ -70,25 +76,23 @@ struct PredictView: View {
                         Text(error).foregroundStyle(Color.predktCoral).multilineTextAlignment(.center)
                         Button(action: { Task { await viewModel.refreshMatches() } }) {
                             Text("Try Again").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
-                                .padding(.horizontal, 24).padding(.vertical, 10).background(Color.predktLime).cornerRadius(12)
+                                .padding(.horizontal, 24).padding(.vertical, 10)
+                                .background(Color.predktLime).cornerRadius(12)
                         }
                     }
                     .padding(20)
                     Spacer()
                 } else {
-                    // ✅ Swipe on the whole content area using simultaneousGesture
-                    // so it doesn't conflict with the ScrollView's vertical scroll
                     matchContent
                         .simultaneousGesture(
-                            DragGesture(minimumDistance: 30, coordinateSpace: .local)
+                            DragGesture(minimumDistance: 40, coordinateSpace: .local)
                                 .onEnded { value in
                                     let h = value.translation.width
                                     let v = abs(value.translation.height)
-                                    // Only trigger if gesture is clearly horizontal
                                     guard abs(h) > v * 1.5 else { return }
-                                    withAnimation(.easeInOut(duration: 0.25)) {
-                                        if h < -30 { viewModel.goToNextDay() }
-                                        else if h > 30 { viewModel.goToPreviousDay() }
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        if h < -40 { viewModel.goToNextDay() }
+                                        else if h > 40 { viewModel.goToPreviousDay() }
                                     }
                                 }
                         )
@@ -106,21 +110,15 @@ struct PredictView: View {
         .sheet(isPresented: $showingQuestions) {
             if let match = selectedMatch {
                 QuestionsSheetView(
-                    match: match,
-                    viewModel: viewModel,
-                    myPicksCount: myPicksCount,
-                    isPresented: $showingQuestions,
-                    onSubmit: {
-                        Task {
-                            if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
-                                myPicksCount = picks.count
-                            }
-                        }
-                    }
+                    match: match, viewModel: viewModel,
+                    myPicksCount: myPicksCount, isPresented: $showingQuestions,
+                    onSubmit: { Task { if let p = try? await SupabaseManager.shared.fetchMyPicks() { myPicksCount = p.count } } }
                 )
             }
         }
     }
+
+    // MARK: - Match Content
 
     @ViewBuilder
     private var matchContent: some View {
@@ -129,16 +127,17 @@ struct PredictView: View {
         } else {
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 0) {
+                    // Summary bar
                     HStack {
                         Text("\(viewModel.filteredMatches.count) MATCHES · \(viewModel.matchesByLeague.count) COMPETITIONS")
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
                         Spacer()
-                        HStack(spacing: 3) {
-                            Image(systemName: "chevron.left").font(.system(size: 8))
-                            Text("SWIPE").font(.system(size: 8, weight: .bold)).kerning(1)
-                            Image(systemName: "chevron.right").font(.system(size: 8))
+                        if !viewModel.favouriteLeagueIds.isEmpty || !viewModel.favouriteTeamNames.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Color.predktAmber)
+                                Text("FAVES FIRST").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktAmber).kerning(0.5)
+                            }
                         }
-                        .foregroundStyle(Color.predktMuted.opacity(0.4))
                     }
                     .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
 
@@ -146,6 +145,8 @@ struct PredictView: View {
                         LeagueSection(
                             league: group.league,
                             matches: group.matches,
+                            isFavourite: group.isFavourite,
+                            viewModel: viewModel,
                             onSelect: { match in
                                 viewModel.clearAnswers()
                                 selectedMatch = match
@@ -153,7 +154,7 @@ struct PredictView: View {
                             }
                         )
                     }
-                    Spacer().frame(height: 50)
+                    Spacer().frame(height: 80)
                 }
             }
         }
@@ -165,6 +166,8 @@ struct PredictView: View {
 struct LeagueSection: View {
     let league: String
     let matches: [Match]
+    let isFavourite: Bool
+    let viewModel: PredictViewModel
     let onSelect: (Match) -> Void
     @State private var isExpanded = true
 
@@ -172,15 +175,34 @@ struct LeagueSection: View {
         VStack(spacing: 0) {
             Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
                 HStack(spacing: 10) {
-                    Rectangle().fill(Color.predktLime).frame(width: 3, height: 16).cornerRadius(2)
-                    Text(league.uppercased()).font(.system(size: 11, weight: .black)).foregroundStyle(.white).kerning(0.5)
+                    // ✅ Favourite star accent
+                    Rectangle()
+                        .fill(isFavourite ? Color.predktAmber : Color.predktLime)
+                        .frame(width: 3, height: 16).cornerRadius(2)
+
+                    if isFavourite {
+                        Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Color.predktAmber)
+                    }
+
+                    Text(league.uppercased())
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundStyle(isFavourite ? Color.predktAmber : .white)
+                        .kerning(0.5)
+
                     Spacer()
-                    Text("\(matches.count)").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
-                        .padding(.horizontal, 7).padding(.vertical, 3).background(Color.predktLime.opacity(0.12)).cornerRadius(6)
+
+                    Text("\(matches.count)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(isFavourite ? Color.predktAmber : Color.predktLime)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background((isFavourite ? Color.predktAmber : Color.predktLime).opacity(0.12))
+                        .cornerRadius(6)
+
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
-                .padding(.horizontal, 20).padding(.vertical, 12).background(Color.predktCard.opacity(0.5))
+                .padding(.horizontal, 20).padding(.vertical, 12)
+                .background(Color.predktCard.opacity(isFavourite ? 0.7 : 0.5))
             }
             .buttonStyle(PlainButtonStyle())
 
@@ -188,7 +210,7 @@ struct LeagueSection: View {
                 VStack(spacing: 0) {
                     ForEach(matches, id: \.id) { match in
                         Button(action: { onSelect(match) }) {
-                            MatchRow(match: match)
+                            MatchRow(match: match, isFavourite: viewModel.isFavouriteMatch(match))
                         }
                         .buttonStyle(PlainButtonStyle())
 
@@ -204,14 +226,15 @@ struct LeagueSection: View {
     }
 }
 
-// MARK: - Match Row — clean, no pick chips
+// MARK: - Match Row
 
 struct MatchRow: View {
     let match: Match
+    let isFavourite: Bool
 
     var body: some View {
         HStack(spacing: 0) {
-            // Time
+            // Time column
             VStack(spacing: 4) {
                 if match.isLive {
                     Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
@@ -230,12 +253,14 @@ struct MatchRow: View {
             Rectangle().fill(Color.predktBorder).frame(width: 1, height: 60)
 
             HStack(spacing: 0) {
+                // Home
                 HStack(spacing: 10) {
                     TeamBadgeView(url: match.homeLogo).frame(width: 28, height: 28)
                     Text(match.home).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                // Score or VS
                 if match.isLive || match.isFinished {
                     VStack(spacing: 2) {
                         Text(match.score).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
@@ -248,6 +273,7 @@ struct MatchRow: View {
                     Text("vs").font(.system(size: 12)).foregroundStyle(Color.predktMuted).frame(width: 60)
                 }
 
+                // Away
                 HStack(spacing: 10) {
                     Text(match.away).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
                         .lineLimit(1).multilineTextAlignment(.trailing)
@@ -256,9 +282,16 @@ struct MatchRow: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 16)
+
+            // ✅ Favourite star indicator
+            if isFavourite {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 10)).foregroundStyle(Color.predktAmber)
+                    .frame(width: 28)
+            }
         }
         .frame(height: 72)
-        .background(Color.predktBg)
+        .background(isFavourite ? Color.predktAmber.opacity(0.04) : Color.predktBg)
         .contentShape(Rectangle())
     }
 }
@@ -271,24 +304,26 @@ struct QuestionsSheetView: View {
     let myPicksCount: Int
     @Binding var isPresented: Bool
     let onSubmit: () -> Void
-
     var questions: [PredictViewModel.Question] { viewModel.getQuestions(for: match) }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.predktBg.ignoresSafeArea()
             VStack(spacing: 0) {
+                // Match header
                 VStack(spacing: 12) {
                     HStack {
                         Button(action: { isPresented = false }) {
                             Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(Color.predktMuted).padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
+                                .foregroundStyle(Color.predktMuted).padding(8)
+                                .background(Color.white.opacity(0.07)).cornerRadius(8)
                         }
                         Spacer()
                         if match.isLive {
                             HStack(spacing: 4) {
                                 Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
-                                Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")").font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
+                                Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
+                                    .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
                             }
                         }
                     }
@@ -405,17 +440,15 @@ struct QuestionCard: View {
 struct AnswerPollRow: View {
     let answer: PredictViewModel.Answer
     @ObservedObject var viewModel: PredictViewModel
-
     var isLocked: Bool     { viewModel.isLocked(answer) }
     var isConflicted: Bool { viewModel.conflicts(answer) }
     var xpColour: Color {
         switch answer.probability {
-        case 0..<30:  return Color.predktCoral
+        case 0..<30: return Color.predktCoral
         case 30..<55: return Color.predktAmber
-        default:      return Color.predktLime
+        default: return Color.predktLime
         }
     }
-
     var body: some View {
         Button(action: { if !isConflicted { viewModel.lockAnswer(answer) } }) {
             ZStack(alignment: .leading) {
@@ -430,19 +463,13 @@ struct AnswerPollRow: View {
                         Circle().stroke(isLocked ? Color.predktLime : Color.white.opacity(0.15), lineWidth: 2).frame(width: 22, height: 22)
                         if isLocked { Circle().fill(Color.predktLime).frame(width: 14, height: 14) }
                     }
-                    Text(answer.label)
-                        .font(.system(size: 14, weight: isLocked ? .bold : .medium))
-                        .foregroundStyle(isLocked ? .white : isConflicted ? Color.predktMuted.opacity(0.4) : Color.predktMuted)
-                        .lineLimit(2)
+                    Text(answer.label).font(.system(size: 14, weight: isLocked ? .bold : .medium))
+                        .foregroundStyle(isLocked ? .white : isConflicted ? Color.predktMuted.opacity(0.4) : Color.predktMuted).lineLimit(2)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
                         HStack(spacing: 4) {
-                            if isLocked {
-                                Text("TAP TO REMOVE").font(.system(size: 7, weight: .bold))
-                                    .foregroundStyle(Color.predktLime.opacity(0.7)).kerning(0.5)
-                            }
-                            Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black))
-                                .foregroundStyle(isLocked ? Color.predktLime : xpColour)
+                            if isLocked { Text("TAP TO REMOVE").font(.system(size: 7, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.7)).kerning(0.5) }
+                            Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black)).foregroundStyle(isLocked ? Color.predktLime : xpColour)
                         }
                         Text(answer.probabilityDisplay).font(.system(size: 10))
                             .foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
@@ -452,10 +479,7 @@ struct AnswerPollRow: View {
             }
             .frame(height: 52)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.03))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(
-                    isLocked ? Color.predktLime.opacity(0.5) : Color.predktBorder,
-                    lineWidth: isLocked ? 1.5 : 1
-                )))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(isLocked ? Color.predktLime.opacity(0.5) : Color.predktBorder, lineWidth: isLocked ? 1.5 : 1)))
             .opacity(isConflicted ? 0.35 : 1.0)
             .scaleEffect(isLocked ? 1.01 : 1.0)
             .animation(.easeOut(duration: 0.15), value: isLocked)
@@ -477,7 +501,8 @@ struct LockedAnswersBanner: View {
                     HStack(spacing: 6) {
                         ForEach(viewModel.lockedAnswers) { answer in
                             Text(answer.shortLabel).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 8).padding(.vertical, 4).background(Color.predktLime.opacity(0.15)).cornerRadius(6)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color.predktLime.opacity(0.15)).cornerRadius(6)
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.predktLime.opacity(0.3), lineWidth: 1))
                         }
                     }
@@ -495,23 +520,38 @@ struct LockedAnswersBanner: View {
     }
 }
 
-// MARK: - Date Chip
+// MARK: - Date Chip (with match dot indicator)
 
 struct GameDateChip: View {
-    let date: Date; let isSelected: Bool; let action: () -> Void
+    let date: Date
+    let isSelected: Bool
+    let hasMatches: Bool
+    let action: () -> Void
     var isToday: Bool { Calendar.current.isDateInToday(date) }
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Text(isToday ? "TODAY" : date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
                     .font(.system(size: 8, weight: .black)).kerning(1)
-                Text(date.formatted(.dateTime.day())).font(.system(size: 17, weight: .black))
+                Text(date.formatted(.dateTime.day()))
+                    .font(.system(size: 17, weight: .black))
+                // ✅ Dot indicates this day has matches
+                if hasMatches {
+                    Circle().fill(isSelected ? Color.black.opacity(0.4) : Color.predktLime)
+                        .frame(width: 4, height: 4)
+                } else {
+                    Color.clear.frame(width: 4, height: 4)
+                }
             }
-            .foregroundStyle(isSelected ? .black : Color.predktMuted)
-            .frame(width: 52, height: 60)
+            .foregroundStyle(isSelected ? .black : hasMatches ? .white : Color.predktMuted)
+            .frame(width: 52, height: 64)
             .background(isSelected ? Color.predktLime : Color.predktCard)
             .cornerRadius(14)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(isSelected ? Color.clear : Color.predktBorder, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(
+                isSelected ? Color.clear : hasMatches ? Color.predktBorder : Color.predktBorder.opacity(0.4),
+                lineWidth: 1
+            ))
         }
     }
 }
