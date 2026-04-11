@@ -31,13 +31,13 @@ struct MainTabView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             FeedView()
-                .tabItem { Label("Arena",   systemImage: "flame.fill") }.tag(0)
+                .tabItem { Label("Arena",    systemImage: "flame.fill") }.tag(0)
             PredictView()
-                .tabItem { Label("Play",    systemImage: "bolt.circle.fill") }.tag(1)
+                .tabItem { Label("Play",     systemImage: "bolt.circle.fill") }.tag(1)
             LeagueView()
-                .tabItem { Label("Leagues", systemImage: "trophy.fill") }.tag(2)
+                .tabItem { Label("Leagues",  systemImage: "trophy.fill") }.tag(2)
             ProfileView()
-                .tabItem { Label("My Stats",systemImage: "chart.bar.fill") }.tag(3)
+                .tabItem { Label("My Stats", systemImage: "chart.bar.fill") }.tag(3)
         }
         .tint(Color.predktLime)
         .onAppear { NotificationManager.shared.clearBadge() }
@@ -48,17 +48,16 @@ struct MainTabView: View {
 
 struct ProfileView: View {
     @EnvironmentObject var supabaseManager: SupabaseManager
-    @StateObject private var feedViewModel    = FeedViewModel()
+    @StateObject private var feedViewModel     = FeedViewModel()
     @StateObject private var calendarViewModel = CalendarViewModel()
-    @StateObject private var notifManager    = NotificationManager.shared
+    @ObservedObject  private var notifManager  = NotificationManager.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var isEditingUsername = false
     @State private var editedUsername    = ""
     @State private var isSavingUsername  = false
     @State private var usernameError: String?
     @State private var usernameSaved     = false
-
-    // Calendar state
     @State private var selectedCalDate   = Date()
     @State private var showingDayDetail  = false
 
@@ -66,20 +65,18 @@ struct ProfileView: View {
         if let n = feedViewModel.userProfile?.username, !n.isEmpty { return n }
         return supabaseManager.user?.email.map { String($0.split(separator: "@").first ?? "Player") } ?? "Player"
     }
-
     private var xpTotal: Int     { feedViewModel.userProfile?.total_points    ?? 0 }
     private var level: Int       { max(1, xpTotal / 500 + 1) }
     private var xpInLevel: Int   { xpTotal % 500 }
     private var winStreak: Int   { feedViewModel.userProfile?.current_streak  ?? 0 }
     private var dailyStreak: Int { feedViewModel.userProfile?.daily_streak    ?? 0 }
     private var bestStreak: Int  { feedViewModel.userProfile?.best_streak     ?? 0 }
-    private var streakMultiplier: Double { min(2.0, 1.0 + Double(winStreak) * 0.1) }
+    private var streakMult: Double { min(2.0, 1.0 + Double(winStreak) * 0.1) }
 
     var body: some View {
         ZStack {
             Color.predktBg.ignoresSafeArea()
             VStack(spacing: 0) {
-                // Header
                 HStack {
                     Text("MY STATS").font(.system(size: 13, weight: .black))
                         .foregroundStyle(Color.predktMuted).kerning(2)
@@ -90,83 +87,13 @@ struct ProfileView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
-
-                        // ── Identity card ──────────────────────────────────────
                         identityCard
-
-                        // ── Streak cards ───────────────────────────────────────
-                        HStack(spacing: 12) {
-                            StreakCard(icon: "🔥", value: "\(winStreak)",
-                                       label: "Win Streak",
-                                       sublabel: winStreak > 0 ? "×\(String(format:"%.1f",streakMultiplier)) XP multiplier" : "Win to start streak",
-                                       colour: winStreak > 0 ? Color.predktAmber : Color.predktMuted)
-                            StreakCard(icon: "📅", value: "\(dailyStreak)",
-                                       label: "Daily Streak",
-                                       sublabel: dailyStreak >= 2 ? "×1.2 bonus active!" : "Play tomorrow to activate",
-                                       colour: dailyStreak >= 2 ? Color.predktLime : Color.predktMuted)
-                        }
-
-                        // ── Active multipliers ─────────────────────────────────
-                        if winStreak > 0 || dailyStreak >= 2 {
-                            multiplierCard
-                        }
-
-                        // ── Stats grid ─────────────────────────────────────────
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            XPStatCard(label: "Total XP",    value: "\(xpTotal)",  icon: "⚡")
-                            XPStatCard(label: "This Week",   value: "\(feedViewModel.userProfile?.weekly_points ?? 0)", icon: "📈")
-                            XPStatCard(label: "Best Streak", value: "\(bestStreak)🔥", icon: "🏆")
-                            XPStatCard(label: "Best Daily",  value: "\(feedViewModel.userProfile?.best_daily_streak ?? 0)🔥", icon: "📅")
-                        }
-
-                        // ── Notification toggle ─────────────────────────────────
-                        notificationToggleCard
-
-                        // ── History Calendar ───────────────────────────────────
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Text("📅 PREDICTION HISTORY")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundStyle(Color.predktMuted).kerning(1.5)
-                                Spacer()
-                            }
-
-                            // Streak summary
-                            StreakSummaryCard(viewModel: calendarViewModel)
-
-                            // Calendar
-                            MonthCalendarView(
-                                viewModel: calendarViewModel,
-                                selectedDate: $selectedCalDate,
-                                onSelectDate: { date in
-                                    selectedCalDate = date
-                                    Task { await calendarViewModel.loadPicks(for: date) }
-                                    showingDayDetail = true
-                                }
-                            )
-
-                            // Today's picks preview
-                            if !calendarViewModel.todayPicks.isEmpty {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("TODAY'S PLAYS")
-                                        .font(.system(size: 9, weight: .black))
-                                        .foregroundStyle(Color.predktMuted).kerning(1.5)
-                                    ForEach(calendarViewModel.todayPicks) { pick in
-                                        CalendarPickRow(pick: pick)
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Log out ────────────────────────────────────────────
-                        Button(action: { Task { try? await supabaseManager.logout() } }) {
-                            Text("Log Out")
-                                .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.predktCoral)
-                                .frame(maxWidth: .infinity).frame(height: 48)
-                                .background(Color.predktCoral.opacity(0.08)).cornerRadius(12)
-                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.predktCoral.opacity(0.25), lineWidth: 1))
-                        }
-
+                        streakCards
+                        if winStreak > 0 || dailyStreak >= 2 { multiplierCard }
+                        statsGrid
+                        notificationCard      // ✅ fixed toggle
+                        calendarSection       // ✅ history moved here
+                        logoutButton
                         Spacer().frame(height: 40)
                     }
                     .padding(16)
@@ -177,6 +104,13 @@ struct ProfileView: View {
             Task {
                 await feedViewModel.load()
                 await calendarViewModel.loadAllPicks()
+                await notifManager.checkStatus() // re-check on appear
+            }
+        }
+        // ✅ Re-check notification status when app returns from background/Settings
+        .onChange(of: scenePhase) {
+            if scenePhase == .active {
+                Task { await notifManager.checkStatus() }
             }
         }
         .sheet(isPresented: $showingDayDetail) {
@@ -202,12 +136,10 @@ struct ProfileView: View {
                 VStack(spacing: 8) {
                     TextField("Username", text: $editedUsername)
                         .font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(10).background(Color.white.opacity(0.07)).cornerRadius(8)
+                        .multilineTextAlignment(.center).padding(10)
+                        .background(Color.white.opacity(0.07)).cornerRadius(8)
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    if let err = usernameError {
-                        Text(err).font(.system(size: 12)).foregroundStyle(Color.predktCoral)
-                    }
+                    if let err = usernameError { Text(err).font(.system(size: 12)).foregroundStyle(Color.predktCoral) }
                     HStack(spacing: 10) {
                         Button("Cancel") { isEditingUsername = false; usernameError = nil }
                             .font(.system(size: 13)).foregroundStyle(Color.predktMuted)
@@ -218,18 +150,14 @@ struct ProfileView: View {
                                 .font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
                         }
                         .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(Color.predktLime).cornerRadius(8)
-                        .disabled(isSavingUsername)
+                        .background(Color.predktLime).cornerRadius(8).disabled(isSavingUsername)
                     }
                 }
             } else {
                 VStack(spacing: 4) {
                     HStack(spacing: 8) {
                         Text(displayUsername).font(.system(size: 22, weight: .black)).foregroundStyle(.white)
-                        Button(action: {
-                            editedUsername = displayUsername; usernameError = nil
-                            usernameSaved = false; isEditingUsername = true
-                        }) {
+                        Button(action: { editedUsername = displayUsername; usernameError = nil; usernameSaved = false; isEditingUsername = true }) {
                             Image(systemName: "pencil").font(.system(size: 12)).foregroundStyle(Color.predktLime)
                                 .padding(6).background(Color.predktLime.opacity(0.12)).cornerRadius(6)
                         }
@@ -242,11 +170,9 @@ struct ProfileView: View {
             // XP bar
             VStack(spacing: 6) {
                 HStack {
-                    Text("XP TO LEVEL \(level + 1)")
-                        .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
+                    Text("XP TO LEVEL \(level + 1)").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
                     Spacer()
-                    Text("\(xpInLevel) / 500")
-                        .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
+                    Text("\(xpInLevel) / 500").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
                 }
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -261,19 +187,28 @@ struct ProfileView: View {
         .padding(20).background(Color.predktCard).cornerRadius(20)
     }
 
-    // MARK: - Multiplier Card
+    // MARK: - Streak Cards
+
+    private var streakCards: some View {
+        HStack(spacing: 12) {
+            StreakCard(icon: "🔥", value: "\(winStreak)", label: "Win Streak",
+                       sublabel: winStreak > 0 ? "×\(String(format:"%.1f",streakMult)) XP multiplier" : "Win to start streak",
+                       colour: winStreak > 0 ? Color.predktAmber : Color.predktMuted)
+            StreakCard(icon: "📅", value: "\(dailyStreak)", label: "Daily Streak",
+                       sublabel: dailyStreak >= 2 ? "×1.2 bonus active!" : "Play tomorrow",
+                       colour: dailyStreak >= 2 ? Color.predktLime : Color.predktMuted)
+        }
+    }
 
     private var multiplierCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("ACTIVE MULTIPLIERS")
-                .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktMuted).kerning(1.5)
+            Text("ACTIVE MULTIPLIERS").font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktMuted).kerning(1.5)
             if winStreak > 0 {
                 HStack {
-                    Label("Win streak ×\(String(format:"%.1f",streakMultiplier))", systemImage: "flame.fill")
+                    Label("Win streak ×\(String(format:"%.1f",streakMult))", systemImage: "flame.fill")
                         .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.predktAmber)
                     Spacer()
-                    Text("+\(Int((streakMultiplier-1)*100))% on all XP")
-                        .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                    Text("+\(Int((streakMult-1)*100))% on all XP").font(.system(size: 11)).foregroundStyle(Color.predktMuted)
                 }
             }
             if dailyStreak >= 2 {
@@ -288,66 +223,129 @@ struct ProfileView: View {
         .padding(14).background(Color.predktCard).cornerRadius(14)
     }
 
-    // MARK: - ✅ Notification Toggle Card
+    private var statsGrid: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+            XPStatCard(label: "Total XP",    value: "\(xpTotal)",  icon: "⚡")
+            XPStatCard(label: "This Week",   value: "\(feedViewModel.userProfile?.weekly_points ?? 0)", icon: "📈")
+            XPStatCard(label: "Best Streak", value: "\(bestStreak)🔥", icon: "🏆")
+            XPStatCard(label: "Best Daily",  value: "\(feedViewModel.userProfile?.best_daily_streak ?? 0)🔥", icon: "📅")
+        }
+    }
 
-    private var notificationToggleCard: some View {
-        HStack(spacing: 14) {
-            Image(systemName: notifManager.isAuthorized ? "bell.fill" : "bell.slash.fill")
-                .font(.system(size: 22))
-                .foregroundStyle(notifManager.isAuthorized ? Color.predktLime : Color.predktMuted)
-                .frame(width: 36)
+    // MARK: - ✅ Notification Card — proper toggle with scene-phase re-check
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Notifications")
-                    .font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
-                Text(notifManager.isAuthorized
-                     ? "Match reminders & results on"
-                     : "Tap to enable notifications")
-                    .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
-            }
+    private var notificationCard: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle().fill(notifManager.isAuthorized ? Color.predktLime.opacity(0.15) : Color.predktMuted.opacity(0.1))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: notifManager.isAuthorized ? "bell.fill" : "bell.slash.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(notifManager.isAuthorized ? Color.predktLime : Color.predktMuted)
+                }
 
-            Spacer()
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Notifications").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                    Text(notifManager.isAuthorized ? "Match reminders & results enabled" : "Disabled — tap to turn on")
+                        .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                }
 
-            // ✅ Toggle — if authorized show a toggle, if not show enable button
-            if notifManager.isAuthorized {
-                Toggle("", isOn: Binding(
-                    get: { notifManager.isAuthorized },
-                    set: { enabled in
-                        if !enabled {
-                            // Can't revoke programmatically — direct to Settings
-                            if let url = URL(string: UIApplication.openSettingsURLString) {
-                                UIApplication.shared.open(url)
+                Spacer()
+
+                if notifManager.isAuthorized {
+                    // ✅ Toggle ON→OFF opens Settings (iOS requirement)
+                    // Toggle state reflects real permission state via scenePhase observer
+                    Toggle("", isOn: .constant(true))
+                        .labelsHidden()
+                        .tint(Color.predktLime)
+                        .onTapGesture {
+                            // Inform user, then open Settings
+                            notifManager.openSettings()
+                        }
+                } else {
+                    // ✅ Toggle OFF→ON requests permission directly
+                    Toggle("", isOn: .constant(false))
+                        .labelsHidden()
+                        .tint(Color.predktLime)
+                        .onTapGesture {
+                            Task {
+                                await notifManager.requestPermission()
                             }
                         }
+                }
+            }
+            .padding(16)
+
+            // Info strip when authorized
+            if notifManager.isAuthorized {
+                Divider().background(Color.predktBorder)
+                HStack(spacing: 20) {
+                    NotifFeaturePill(icon: "soccerball", label: "Kick-off")
+                    NotifFeaturePill(icon: "checkmark.circle", label: "Results")
+                    NotifFeaturePill(icon: "flame.fill", label: "Streaks")
+                    NotifFeaturePill(icon: "calendar", label: "Daily")
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+
+            // Info strip when disabled
+            if !notifManager.isAuthorized {
+                Divider().background(Color.predktBorder)
+                HStack {
+                    Image(systemName: "info.circle").font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                    Text("Toggle will ask for permission. To disable after enabling, go to iOS Settings.")
+                        .font(.system(size: 10)).foregroundStyle(Color.predktMuted)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+        }
+        .background(Color.predktCard).cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(
+            notifManager.isAuthorized ? Color.predktLime.opacity(0.2) : Color.predktBorder, lineWidth: 1
+        ))
+    }
+
+    // MARK: - Calendar Section
+
+    private var calendarSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("📅 PREDICTION HISTORY")
+                .font(.system(size: 11, weight: .black)).foregroundStyle(Color.predktMuted).kerning(1.5)
+
+            StreakSummaryCard(viewModel: calendarViewModel)
+
+            MonthCalendarView(
+                viewModel: calendarViewModel,
+                selectedDate: $selectedCalDate,
+                onSelectDate: { date in
+                    selectedCalDate = date
+                    Task { await calendarViewModel.loadPicks(for: date) }
+                    showingDayDetail = true
+                }
+            )
+
+            if !calendarViewModel.todayPicks.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("TODAY'S PLAYS")
+                        .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktMuted).kerning(1.5)
+                    ForEach(calendarViewModel.todayPicks) { pick in
+                        CalendarPickRow(pick: pick)
                     }
-                ))
-                .labelsHidden()
-                .tint(Color.predktLime)
-            } else {
-                Button(action: {
-                    Task {
-                        await notifManager.requestPermission()
-                        if notifManager.isAuthorized {
-                            notifManager.scheduleDailyReminder()
-                        }
-                    }
-                }) {
-                    Text("Enable")
-                        .font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
-                        .padding(.horizontal, 14).padding(.vertical, 7)
-                        .background(Color.predktLime).cornerRadius(8)
                 }
             }
         }
-        .padding(16).background(Color.predktCard).cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(
-            notifManager.isAuthorized ? Color.predktLime.opacity(0.2) : Color.predktBorder,
-            lineWidth: 1
-        ))
-        .onAppear { Task { await notifManager.checkStatus() } }
     }
 
-    // MARK: - Helpers
+    private var logoutButton: some View {
+        Button(action: { Task { try? await supabaseManager.logout() } }) {
+            Text("Log Out")
+                .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.predktCoral)
+                .frame(maxWidth: .infinity).frame(height: 48)
+                .background(Color.predktCoral.opacity(0.08)).cornerRadius(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.predktCoral.opacity(0.25), lineWidth: 1))
+        }
+    }
 
     private func saveUsername() {
         let t = editedUsername.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -364,6 +362,19 @@ struct ProfileView: View {
     }
 }
 
+// MARK: - Notification Feature Pill
+
+struct NotifFeaturePill: View {
+    let icon: String; let label: String
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 10)).foregroundStyle(Color.predktLime)
+            Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.predktMuted)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 // MARK: - Streak Card
 
 struct StreakCard: View {
@@ -371,11 +382,7 @@ struct StreakCard: View {
     let sublabel: String; let colour: Color
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(icon).font(.system(size: 24))
-                Spacer()
-                Text(value).font(.system(size: 32, weight: .black)).foregroundStyle(colour)
-            }
+            HStack { Text(icon).font(.system(size: 24)); Spacer(); Text(value).font(.system(size: 32, weight: .black)).foregroundStyle(colour) }
             Text(label).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
             Text(sublabel).font(.system(size: 10)).foregroundStyle(Color.predktMuted).lineLimit(2)
         }
@@ -393,8 +400,7 @@ struct XPStatCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(icon).font(.system(size: 22))
             Text(value).font(.system(size: 24, weight: .black)).foregroundStyle(Color.predktLime)
-            Text(label.uppercased()).font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Color.predktMuted).kerning(1)
+            Text(label.uppercased()).font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16).background(Color.predktCard).cornerRadius(16)
