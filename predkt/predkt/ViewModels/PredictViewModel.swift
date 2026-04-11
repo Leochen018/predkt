@@ -4,18 +4,23 @@ import Supabase
 
 @MainActor
 final class PredictViewModel: ObservableObject {
-    @Published var matches: [Match] = []
+    @Published var matches: [Match]  = []
     @Published var selectedDate: Date = Calendar.current.startOfDay(for: Date())
-    @Published var isLoading = false
+    @Published var isLoading         = false
+    @Published var isLoadingOdds     = false   // shown when tapping a match
     @Published var errorMessage: String?
-    @Published var isSubmitting = false
+    @Published var isSubmitting      = false
     @Published var lockedAnswers: [Answer] = []
 
-    // User preferences for prioritisation
-    @Published var favouriteLeagueIds: Set<Int> = []
-    @Published var favouriteTeamNames: Set<String> = []
+    // Odds loaded lazily per match
+    @Published var currentMatchOdds: MatchOdds? = nil
+
+    // User favourites
+    @Published var favouriteLeagueIds:  Set<Int>    = []
+    @Published var favouriteTeamNames:  Set<String> = []
 
     private var matchesLoaded = false
+    private var cancellables  = Set<AnyCancellable>()
     private let supabaseManager = SupabaseManager.shared
 
     static let leaguePriority: [String] = [
@@ -24,6 +29,19 @@ final class PredictViewModel: ObservableObject {
         "Serie A","Serie B","Bundesliga","Bundesliga 2","Ligue 1",
         "Ligue 2","Primeira Liga","Eredivisie",
     ]
+
+    init() {
+        // ✅ Listen for background match refresh (from APIManager stale-while-revalidate)
+        NotificationCenter.default.publisher(for: .matchesRefreshed)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                if let fresh = notification.object as? [Match] {
+                    self?.matches = fresh
+                    print("🔄 Matches refreshed in background: \(fresh.count)")
+                }
+            }
+            .store(in: &cancellables)
+    }
 
     // MARK: - Answer
 
@@ -56,54 +74,97 @@ final class PredictViewModel: ObservableObject {
     }
     func isLocked(_ a: Answer) -> Bool  { lockedAnswers.contains(a) }
     func conflicts(_ a: Answer) -> Bool { lockedAnswers.contains { $0.group == a.group && $0 != a } }
-    func clearAnswers() { lockedAnswers = [] }
+    func clearAnswers() { lockedAnswers = []; currentMatchOdds = nil }
+
+    // MARK: - Navigation
 
     func goToNextDay() {
-        selectedDate = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate)
-            ?? selectedDate
+        let next = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
+        selectedDate = next
+        // ✅ Prefetch odds for next day's matches
+        APIManager.prefetchOdds(for: matchesForDate(next))
     }
+
     func goToPreviousDay() {
         let today = Calendar.current.startOfDay(for: Date())
         let prev  = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
-        if prev >= today { selectedDate = prev }
+        if prev >= today {
+            selectedDate = prev
+            APIManager.prefetchOdds(for: matchesForDate(prev))
+        }
     }
 
-    // MARK: - ✅ Bulletproof Date Filtering
-    // Strategy: take the first 10 chars of rawDate ("yyyy-MM-dd" always UTC from API)
-    // Convert selectedDate to same UTC date string for comparison.
-    // This avoids any timezone parsing issues entirely.
+    // MARK: - Date Filtering (local timezone)
 
     private static let localDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
-        f.timeZone   = .current               // ✅ LOCAL timezone (BST)
+        f.timeZone   = .current
         f.locale     = Locale(identifier: "en_US_POSIX")
         return f
     }()
 
-    // Parse the UTC API date, then display in LOCAL timezone
     private func localDateString(from rawDate: String) -> String {
-        let f1 = ISO8601DateFormatter()
-        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let f1 = ISO8601DateFormatter(); f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let d = f1.date(from: rawDate) { return Self.localDateFormatter.string(from: d) }
-        let f2 = ISO8601DateFormatter()
-        f2.formatOptions = [.withInternetDateTime]
+        let f2 = ISO8601DateFormatter(); f2.formatOptions = [.withInternetDateTime]
         if let d = f2.date(from: rawDate) { return Self.localDateFormatter.string(from: d) }
         return String(rawDate.prefix(10))
     }
 
     private var selectedDateString: String {
-        Self.localDateFormatter.string(from: selectedDate)  // ✅ LOCAL timezone
+        Self.localDateFormatter.string(from: selectedDate)
     }
 
-    // MARK: - Filtered Matches
-    // MARK: - Filtered Matches
-
-    var filteredMatches: [Match] {
-        let target = selectedDateString
+    private func matchesForDate(_ date: Date) -> [Match] {
+        let target = Self.localDateFormatter.string(from: date)
         return matches.filter { localDateString(from: $0.rawDate) == target }
     }
-    // MARK: - ✅ Grouped by League with Favourites First
+
+    var filteredMatches: [Match] {
+        matchesForDate(selectedDate).sorted {
+            if $0.isLive != $1.isLive { return $0.isLive }
+            if $0.rawDate != $1.rawDate { return $0.rawDate < $1.rawDate }
+            return $0.home < $1.home
+        }
+    }
+
+    var matchesByLeague: [(league: String, matches: [Match], isFavourite: Bool)] {
+        let priority = Self.leaguePriority
+        var order:    [String]           = []
+        var groups:   [String: [Match]]  = [:]
+        var leagueFav:[String: Bool]     = [:]
+
+        for match in filteredMatches {
+            if groups[match.competition] == nil { order.append(match.competition) }
+            groups[match.competition, default: []].append(match)
+            if !(leagueFav[match.competition] ?? false) {
+                leagueFav[match.competition] = isFavouriteMatch(match)
+            }
+        }
+
+        order.sort { a, b in
+            let af = leagueFav[a] ?? false; let bf = leagueFav[b] ?? false
+            if af != bf { return af }
+            let ai = priority.firstIndex(of: a); let bi = priority.firstIndex(of: b)
+            switch (ai, bi) {
+            case let (.some(x), .some(y)): return x < y
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return a < b
+            }
+        }
+
+        return order.map { league in
+            var sorted = groups[league]!.sorted {
+                let af = isFavouriteMatch($0), bf = isFavouriteMatch($1)
+                if af != bf { return af }
+                if $0.isLive != $1.isLive { return $0.isLive }
+                return $0.rawDate < $1.rawDate
+            }
+            return (league: league, matches: sorted, isFavourite: leagueFav[league] ?? false)
+        }
+    }
 
     func isFavouriteMatch(_ match: Match) -> Bool {
         favouriteLeagueIds.contains(match.leagueId)
@@ -111,67 +172,6 @@ final class PredictViewModel: ObservableObject {
         || favouriteTeamNames.contains(match.away)
     }
 
-    var matchesByLeague: [(league: String, matches: [Match], isFavourite: Bool)] {
-        let priority = Self.leaguePriority
-
-        var order: [String]          = []
-        var groups: [String: [Match]] = [:]
-        var leagueFav: [String: Bool] = [:]
-
-        for match in filteredMatches {
-            if groups[match.competition] == nil {
-                order.append(match.competition)
-                groups[match.competition] = []
-            }
-            groups[match.competition, default: []].append(match)
-
-            // Mark league as favourite if it's in user's list OR contains a favourite team
-            if !leagueFav[match.competition, default: false] {
-                leagueFav[match.competition] = isFavouriteMatch(match)
-            }
-        }
-
-        // Sort:
-        // 1. Leagues containing favourite teams/leagues first
-        // 2. Within each tier, sort by known priority list
-        // 3. Unknown leagues alphabetically at the end
-        order.sort { a, b in
-            let aFav = leagueFav[a] ?? false
-            let bFav = leagueFav[b] ?? false
-            if aFav != bFav { return aFav } // favourites first
-
-            let ai = priority.firstIndex(of: a)
-            let bi = priority.firstIndex(of: b)
-            switch (ai, bi) {
-            case let (.some(x), .some(y)): return x < y
-            case (.some, .none):           return true
-            case (.none, .some):           return false
-            case (.none, .none):           return a < b
-            }
-        }
-
-        return order.map { league -> (league: String, matches: [Match], isFavourite: Bool) in
-            var sorted = groups[league]!.sorted {
-                // Within each league: live first, then by kickoff, then home name
-                if $0.isLive != $1.isLive { return $0.isLive }
-                if $0.rawDate != $1.rawDate { return $0.rawDate < $1.rawDate }
-                return $0.home < $1.home
-            }
-            // Within each league, put favourite team matches at the top
-            if leagueFav[league] == true {
-                sorted.sort { a, b in
-                    let aFav = isFavouriteMatch(a)
-                    let bFav = isFavouriteMatch(b)
-                    if aFav != bFav { return aFav }
-                    if a.isLive != b.isLive { return a.isLive }
-                    return a.rawDate < b.rawDate
-                }
-            }
-            return (league: league, matches: sorted, isFavourite: leagueFav[league] ?? false)
-        }
-    }
-
-    // Days that have matches (for carousel dots)
     var datesWithMatches: Set<String> {
         Set(matches.map { localDateString(from: $0.rawDate) })
     }
@@ -190,32 +190,32 @@ final class PredictViewModel: ObservableObject {
             async let profileFetch = supabaseManager.fetchUserProfile()
             let (fetchedMatches, profile) = try await (matchFetch, profileFetch)
 
-            matches = fetchedMatches
+            matches       = fetchedMatches
             matchesLoaded = true
 
-            // Load favourites from profile
-            if let leagueStr = profile?.favourite_league, !leagueStr.isEmpty {
-                favouriteLeagueIds = Set(leagueStr.components(separatedBy: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
+            if let s = profile?.favourite_league, !s.isEmpty {
+                favouriteLeagueIds = Set(s.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
             }
-            if let teamStr = profile?.favourite_team, !teamStr.isEmpty {
-                favouriteTeamNames = Set(teamStr.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+            if let s = profile?.favourite_team, !s.isEmpty {
+                favouriteTeamNames = Set(s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
             }
 
-            let uniqueDays = datesWithMatches.count
-            print("✅ Loaded \(matches.count) matches across \(uniqueDays) days")
-            print("📅 Date range: \(datesWithMatches.sorted().first ?? "?") → \(datesWithMatches.sorted().last ?? "?")")
+            print("✅ \(matches.count) matches, \(datesWithMatches.count) days")
 
-            // If today has no matches, jump to nearest day that does
+            // Auto-advance to first day with matches if today is empty
             if filteredMatches.isEmpty {
                 let cal = Calendar.current
-                for i in 0..<60 {
-                    if let candidate = cal.date(byAdding: .day, value: i, to: selectedDate),
-                       hasMatches(on: candidate) {
-                        selectedDate = candidate
-                        break
-                    }
+                for i in 0..<30 {
+                    guard let candidate = cal.date(byAdding: .day, value: i, to: selectedDate),
+                          hasMatches(on: candidate) else { continue }
+                    selectedDate = candidate
+                    break
                 }
             }
+
+            // ✅ Pre-fetch odds for today's matches in background
+            APIManager.prefetchOdds(for: filteredMatches)
+
         } catch {
             errorMessage = error.localizedDescription
             print("❌ Load error: \(error)")
@@ -225,13 +225,35 @@ final class PredictViewModel: ObservableObject {
 
     func refreshMatches() async {
         matchesLoaded = false; matches = []; isLoading = true
-        await loadMatches()
+        do {
+            matches       = try await APIManager.forceRefresh()
+            matchesLoaded = true
+            if filteredMatches.isEmpty {
+                let cal = Calendar.current
+                for i in 0..<30 {
+                    guard let candidate = cal.date(byAdding: .day, value: i, to: selectedDate),
+                          hasMatches(on: candidate) else { continue }
+                    selectedDate = candidate; break
+                }
+            }
+        } catch { errorMessage = error.localizedDescription }
+        isLoading = false
+    }
+
+    // ✅ Lazy odds loading — called when user taps a match
+    func loadOdds(for match: Match) async {
+        currentMatchOdds = nil
+        guard !match.isLive, !match.isFinished else { return }
+        isLoadingOdds    = true
+        currentMatchOdds = await APIManager.fetchOdds(for: match)
+        isLoadingOdds    = false
     }
 
     // MARK: - Questions
+    // Now uses currentMatchOdds (lazily loaded) instead of match.odds
 
     func getQuestions(for match: Match) -> [Question] {
-        let o = match.odds
+        let o = currentMatchOdds  // ✅ uses lazily loaded odds
         var q: [Question] = []
 
         func a(_ label: String, short: String, _ odd: Double?, _ group: String) -> Answer? {
@@ -249,19 +271,19 @@ final class PredictViewModel: ObservableObject {
         let r=ans([a("\(match.home) Win",short:"HOME",o?.homeWin,"result"),a("Draw",short:"DRAW",o?.draw,"result"),a("\(match.away) Win",short:"AWAY",o?.awayWin,"result")])
         if !r.isEmpty{q.append(Question(category:"⚽ MATCH RESULT",prompt:"Who wins this match?",icon:"trophy",answers:r))}
         let ha=ans([a("\(match.home) to win",short:"HOME",o?.homeWinNoDraw,"ha"),a("\(match.away) to win",short:"AWAY",o?.awayWinNoDraw,"ha")])
-        if !ha.isEmpty{q.append(Question(category:"🏆 HOME OR AWAY",prompt:"Who wins? (no draw option)",icon:"arrow.left.arrow.right",answers:ha))}
+        if !ha.isEmpty{q.append(Question(category:"🏆 HOME OR AWAY",prompt:"No draw option",icon:"arrow.left.arrow.right",answers:ha))}
         let dc=ans([a("\(match.home) or Draw",short:"1X",o?.homeOrDraw,"dc"),a("Either team wins",short:"12",o?.homeOrAway,"dc"),a("\(match.away) or Draw",short:"X2",o?.awayOrDraw,"dc")])
         if !dc.isEmpty{q.append(Question(category:"🛡 DOUBLE CHANCE",prompt:"Pick two outcomes",icon:"shield.lefthalf.filled",answers:dc))}
         let dnb=ans([a(match.home,short:"HOME",o?.dnbHome,"dnb"),a(match.away,short:"AWAY",o?.dnbAway,"dnb")])
         if !dnb.isEmpty{q.append(Question(category:"🔄 DRAW NO BET",prompt:"Win or XP back on a draw",icon:"arrow.uturn.left.circle",answers:dnb))}
         let ah=ans([a("\(match.home) -0.5",short:"H-0.5",o?.ahHome05,"ah_h05"),a("\(match.away) -0.5",short:"A-0.5",o?.ahAway05,"ah_a05"),a("\(match.home) -1.5",short:"H-1.5",o?.ahHome15,"ah_h15"),a("\(match.away) -1.5",short:"A-1.5",o?.ahAway15,"ah_a15")])
-        if !ah.isEmpty{q.append(Question(category:"⚖️ ASIAN HANDICAP",prompt:"Pick a team with a goal handicap",icon:"scalemass",answers:ah))}
-        let goals=ans([a("At least 1",short:"O0.5",o?.over05,"g05"),a("0 goals",short:"U0.5",o?.under05,"g05"),a("2+ goals",short:"O1.5",o?.over15,"g15"),a("0 or 1",short:"U1.5",o?.under15,"g15"),a("3+ goals",short:"O2.5",o?.over25,"g25"),a("Under 3",short:"U2.5",o?.under25,"g25"),a("4+ goals",short:"O3.5",o?.over35,"g35"),a("Under 4",short:"U3.5",o?.under35,"g35"),a("5+ goals",short:"O4.5",o?.over45,"g45"),a("Under 5",short:"U4.5",o?.under45,"g45")])
+        if !ah.isEmpty{q.append(Question(category:"⚖️ ASIAN HANDICAP",prompt:"Team with a goal handicap",icon:"scalemass",answers:ah))}
+        let goals=ans([a("At least 1",short:"O0.5",o?.over05,"g05"),a("0 goals",short:"U0.5",o?.under05,"g05"),a("2+",short:"O1.5",o?.over15,"g15"),a("0-1",short:"U1.5",o?.under15,"g15"),a("3+",short:"O2.5",o?.over25,"g25"),a("Under 3",short:"U2.5",o?.under25,"g25"),a("4+",short:"O3.5",o?.over35,"g35"),a("Under 4",short:"U3.5",o?.under35,"g35"),a("5+",short:"O4.5",o?.over45,"g45"),a("Under 5",short:"U4.5",o?.under45,"g45")])
         if !goals.isEmpty{q.append(Question(category:"🥅 TOTAL GOALS",prompt:"How many goals in the match?",icon:"soccerball",answers:goals))}
         let exact=ans([a("No goals",short:"0",o?.exactGoals0,"ex0"),a("Exactly 1",short:"1",o?.exactGoals1,"ex1"),a("Exactly 2",short:"2",o?.exactGoals2,"ex2"),a("Exactly 3",short:"3",o?.exactGoals3,"ex3"),a("Exactly 4",short:"4",o?.exactGoals4,"ex4"),a("5+",short:"5+",o?.exactGoals5plus,"ex5")])
-        if !exact.isEmpty{q.append(Question(category:"🔢 EXACT GOALS",prompt:"What's the exact goal count?",icon:"number.circle",answers:exact))}
-        let oe=ans([a("Odd number of goals",short:"ODD",o?.goalsOdd,"goals_oe"),a("Even number of goals",short:"EVEN",o?.goalsEven,"goals_oe")])
-        if !oe.isEmpty{q.append(Question(category:"🎲 GOALS ODD/EVEN",prompt:"Odd or even total goals?",icon:"dice",answers:oe))}
+        if !exact.isEmpty{q.append(Question(category:"🔢 EXACT GOALS",prompt:"Exact goal count?",icon:"number.circle",answers:exact))}
+        let oe=ans([a("Odd goals",short:"ODD",o?.goalsOdd,"goals_oe"),a("Even goals",short:"EVEN",o?.goalsEven,"goals_oe")])
+        if !oe.isEmpty{q.append(Question(category:"🎲 GOALS ODD/EVEN",prompt:"Odd or even total?",icon:"dice",answers:oe))}
         let hg=ans([a("\(match.home) 1+",short:"1+",o?.homeOver05,"hg05"),a("\(match.home) 0",short:"0",o?.homeUnder05,"hg05"),a("\(match.home) 2+",short:"2+",o?.homeOver15,"hg15"),a("\(match.home) 3+",short:"3+",o?.homeOver25,"hg25")])
         if !hg.isEmpty{q.append(Question(category:"🏠 \(match.home.uppercased()) GOALS",prompt:"How many does \(match.home) score?",icon:"house.fill",answers:hg))}
         let ag2=ans([a("\(match.away) 1+",short:"1+",o?.awayOver05,"ag05"),a("\(match.away) 0",short:"0",o?.awayUnder05,"ag05"),a("\(match.away) 2+",short:"2+",o?.awayOver15,"ag15"),a("\(match.away) 3+",short:"3+",o?.awayOver25,"ag25")])
@@ -269,7 +291,7 @@ final class PredictViewModel: ObservableObject {
         let btts=ans([a("Yes — both score",short:"YES",o?.bttsYes,"btts"),a("No — one blank",short:"NO",o?.bttsNo,"btts")])
         if !btts.isEmpty{q.append(Question(category:"🔀 BOTH TEAMS SCORE?",prompt:"Will both teams score?",icon:"arrow.left.and.right.circle",answers:btts))}
         let bttsW=ans([a("Both score & \(match.home) win",short:"BTTS+H",o?.bttsAndHomeWin,"bttsw"),a("Both score & draw",short:"BTTS+D",o?.bttsAndDraw,"bttsw"),a("Both score & \(match.away) win",short:"BTTS+A",o?.bttsAndAwayWin,"bttsw")])
-        if !bttsW.isEmpty{q.append(Question(category:"🔀 BTTS & WINNER",prompt:"Both score — but who wins?",icon:"plus.circle",answers:bttsW))}
+        if !bttsW.isEmpty{q.append(Question(category:"🔀 BTTS & WINNER",prompt:"Both score — who wins?",icon:"plus.circle",answers:bttsW))}
         let bttsH=ans([a("Both score 1st half",short:"1H",o?.bttsFirstHalf,"btts1h")])
         if !bttsH.isEmpty{q.append(Question(category:"🔀 BTTS FIRST HALF",prompt:"Both score before HT?",icon:"1.circle",answers:bttsH))}
         let bttsS=ans([a("Both score 2nd half",short:"2H",o?.bttsSecondHalf,"btts2h")])
@@ -290,12 +312,8 @@ final class PredictViewModel: ObservableObject {
         if !wtn.isEmpty{q.append(Question(category:"🔒 WIN TO NIL",prompt:"Win without conceding?",icon:"lock.shield",answers:wtn))}
         let cs=ans([a("\(match.home) clean sheet",short:"HOME",o?.homeCleanSheet,"cs_h"),a("\(match.away) clean sheet",short:"AWAY",o?.awayCleanSheet,"cs_a")])
         if !cs.isEmpty{q.append(Question(category:"🧤 CLEAN SHEET",prompt:"Who keeps a shutout?",icon:"hand.raised.slash",answers:cs))}
-        let sbh=ans([a("\(match.home) score both halves",short:"H-BH",o?.homeScoreBothHalves,"sbh_h"),a("\(match.away) score both halves",short:"A-BH",o?.awayScoreBothHalves,"sbh_a")])
-        if !sbh.isEmpty{q.append(Question(category:"🔁 SCORE BOTH HALVES",prompt:"A team scores in both halves?",icon:"arrow.triangle.2.circlepath",answers:sbh))}
-        if let scores=o?.correctScores,!scores.isEmpty{q.append(Question(category:"🎯 CORRECT SCORE",prompt:"What's the exact final score?",icon:"number.circle",answers:scores.map{Answer($0.score,short:$0.score,odds:$0.odd,group:"cs_\($0.score)")}))}
-        if let scores=o?.correctScoresHT,!scores.isEmpty{q.append(Question(category:"🎯 CORRECT SCORE — HT",prompt:"Score at half time?",icon:"number.square",answers:scores.map{Answer("HT: \($0.score)",short:$0.score,odds:$0.odd,group:"cs_ht_\($0.score)")}))}
-        if let scores=o?.correctScoresSH,!scores.isEmpty{q.append(Question(category:"🎯 CORRECT SCORE — 2ND HALF",prompt:"Goals in the 2nd half?",icon:"number.square.fill",answers:scores.map{Answer("2H: \($0.score)",short:$0.score,odds:$0.odd,group:"cs_sh_\($0.score)")}))}
-        let wm=ans([a("\(match.home) win by 1",short:"H+1",o?.winMarginHome1,"wm"),a("\(match.home) win by 2",short:"H+2",o?.winMarginHome2,"wm"),a("\(match.home) win by 3+",short:"H+3",o?.winMarginHome3,"wm"),a("\(match.away) win by 1",short:"A+1",o?.winMarginAway1,"wm"),a("\(match.away) win by 2",short:"A+2",o?.winMarginAway2,"wm"),a("\(match.away) win by 3+",short:"A+3",o?.winMarginAway3,"wm"),a("Draw",short:"0",o?.winMarginDraw,"wm")])
+        if let scores=o?.correctScores,!scores.isEmpty{q.append(Question(category:"🎯 CORRECT SCORE",prompt:"Exact final score?",icon:"number.circle",answers:scores.map{Answer($0.score,short:$0.score,odds:$0.odd,group:"cs_\($0.score)")}))}
+        let wm=ans([a("\(match.home) by 1",short:"H+1",o?.winMarginHome1,"wm"),a("\(match.home) by 2",short:"H+2",o?.winMarginHome2,"wm"),a("\(match.home) by 3+",short:"H+3",o?.winMarginHome3,"wm"),a("\(match.away) by 1",short:"A+1",o?.winMarginAway1,"wm"),a("\(match.away) by 2",short:"A+2",o?.winMarginAway2,"wm"),a("\(match.away) by 3+",short:"A+3",o?.winMarginAway3,"wm"),a("Draw",short:"0",o?.winMarginDraw,"wm")])
         if !wm.isEmpty{q.append(Question(category:"📏 WINNING MARGIN",prompt:"By how many goals?",icon:"ruler",answers:wm))}
         let corners=ans([a("Under 8",short:"U7.5",o?.cornersUnder75,"c75"),a("8+",short:"O7.5",o?.cornersOver75,"c75"),a("9+",short:"O8.5",o?.cornersOver85,"c85"),a("10+",short:"O9.5",o?.cornersOver95,"c95"),a("11+",short:"O10.5",o?.cornersOver105,"c105")])
         if !corners.isEmpty{q.append(Question(category:"🚩 TOTAL CORNERS",prompt:"How many corners?",icon:"flag",answers:corners))}
@@ -318,9 +336,11 @@ final class PredictViewModel: ObservableObject {
 
     private func fallbackQuestions(for match: Match) -> [Question] {[
         Question(category:"⚽ MATCH RESULT",prompt:"Who wins?",icon:"trophy",answers:[Answer("\(match.home) Win",short:"HOME",odds:2.10,group:"result"),Answer("Draw",short:"DRAW",odds:3.20,group:"result"),Answer("\(match.away) Win",short:"AWAY",odds:1.90,group:"result")]),
-        Question(category:"🥅 TOTAL GOALS",prompt:"How many goals?",icon:"soccerball",answers:[Answer("Under 3",short:"U2.5",odds:2.00,group:"g25"),Answer("3+ goals",short:"O2.5",odds:1.80,group:"g25")]),
-        Question(category:"🔀 BOTH TEAMS SCORE?",prompt:"Will both teams score?",icon:"arrow.left.and.right.circle",answers:[Answer("Yes — both score",short:"YES",odds:2.30,group:"btts"),Answer("No — one blank",short:"NO",odds:1.60,group:"btts")]),
+        Question(category:"🥅 TOTAL GOALS",prompt:"How many goals?",icon:"soccerball",answers:[Answer("Under 3",short:"U2.5",odds:2.00,group:"g25"),Answer("3+",short:"O2.5",odds:1.80,group:"g25")]),
+        Question(category:"🔀 BOTH TEAMS SCORE?",prompt:"Will both score?",icon:"arrow.left.and.right.circle",answers:[Answer("Yes — both score",short:"YES",odds:2.30,group:"btts"),Answer("No — one blank",short:"NO",odds:1.60,group:"btts")]),
     ]}
+
+    // MARK: - Submit
 
     func submitPlays(match: Match, myPicksCount: Int) async -> Bool {
         guard !lockedAnswers.isEmpty else { errorMessage = "Lock in at least one answer"; return false }

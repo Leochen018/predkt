@@ -1,113 +1,115 @@
 import SwiftUI
 
-// MARK: - Team Badge
-// Used in PredictView, FeedView, and MarketSheetView
+// MARK: - TeamBadgeView
+// ✅ Uses URLSession's shared URLCache (configured in APIManager)
+// Images are cached to disk automatically — no repeated downloads
+// AsyncImage with smooth fade-in transition
 
 struct TeamBadgeView: View {
     let url: String?
 
     var body: some View {
         Group {
-            if let urlString = url, let imageURL = URL(string: urlString) {
-                AsyncImage(url: imageURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFit()
-                    default:
-                        badgePlaceholder
-                    }
-                }
+            if let urlStr = url, let imageURL = URL(string: urlStr) {
+                CachedAsyncImage(url: imageURL)
             } else {
-                badgePlaceholder
+                placeholderBadge
             }
         }
-        .frame(width: 28, height: 28)
     }
 
-    private var badgePlaceholder: some View {
+    private var placeholderBadge: some View {
         Circle()
-            .fill(Color.white.opacity(0.07))
-            .frame(width: 28, height: 28)
+            .fill(Color.predktCard)
+            .overlay(
+                Image(systemName: "shield.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.predktMuted)
+            )
     }
 }
 
-// MARK: - Match Card
-// Used in PredictView match list
+// ✅ Custom image loader that uses URLCache properly
+// AsyncImage doesn't use URLCache — this does
+struct CachedAsyncImage: View {
+    let url: URL
+    @State private var image: UIImage?
+    @State private var isLoading = false
+
+    // Static cache shared across all instances
+    private static let imageCache = NSCache<NSURL, UIImage>()
+
+    var body: some View {
+        Group {
+            if let img = image {
+                Image(uiImage: img)
+                    .resizable().scaledToFit()
+                    .transition(.opacity.animation(.easeIn(duration: 0.15)))
+            } else {
+                Circle()
+                    .fill(Color.predktCard)
+                    .overlay(
+                        Image(systemName: "shield.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.predktMuted)
+                    )
+                    .onAppear { loadImage() }
+            }
+        }
+    }
+
+    private func loadImage() {
+        guard !isLoading else { return }
+
+        // 1. In-memory NSCache (instant)
+        if let cached = Self.imageCache.object(forKey: url as NSURL) {
+            image = cached
+            return
+        }
+
+        isLoading = true
+        Task.detached(priority: .utility) {
+            // 2. URL request with disk cache (URLSession auto-handles)
+            var request = URLRequest(url: url)
+            request.cachePolicy = .returnCacheDataElseLoad
+            if let (data, _) = try? await URLSession.shared.data(for: request),
+               let loaded = UIImage(data: data) {
+                // Save to in-memory cache
+                Self.imageCache.setObject(loaded, forKey: url as NSURL)
+                await MainActor.run { image = loaded }
+            }
+            await MainActor.run { isLoading = false }
+        }
+    }
+}
+
+// MARK: - MatchCardView (used in Feed)
 
 struct MatchCardView: View {
     let match: Match
 
     var body: some View {
-        VStack(spacing: 0) {
-            // League / status bar
+        HStack(spacing: 12) {
             HStack(spacing: 6) {
-                Text(match.competition)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.6, green: 0.59, blue: 0.68))
-                Spacer()
-                if match.isLive {
-                    HStack(spacing: 4) {
-                        Circle().fill(.red).frame(width: 5, height: 5)
-                        Text(match.elapsed.map { "\($0)'" } ?? "LIVE")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.red)
-                    }
-                }
+                TeamBadgeView(url: match.homeLogo).frame(width: 20, height: 20)
+                Text(match.home).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Teams row
-            HStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    TeamBadgeView(url: match.homeLogo)
-                    Text(match.home)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Centre: score or kickoff time
-                if match.isLive || match.isFinished {
-                    Text(match.score)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 64)
-                } else {
-                    VStack(spacing: 1) {
-                        Text(match.kickoffTime)
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0))
-                        Text("KO")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(Color(red: 0.42, green: 0.39, blue: 1.0).opacity(0.7))
-                    }
-                    .frame(width: 64)
-                }
-
-                HStack(spacing: 10) {
-                    Text(match.away)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .multilineTextAlignment(.trailing)
-                    TeamBadgeView(url: match.awayLogo)
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            if match.isLive || match.isFinished {
+                Text(match.score).font(.system(size: 13, weight: .black)).foregroundStyle(.white)
+            } else {
+                Text(match.kickoffTime).font(.system(size: 12, weight: .bold)).foregroundStyle(Color.predktLime)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
+
+            HStack(spacing: 6) {
+                Text(match.away).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    .lineLimit(1).multilineTextAlignment(.trailing)
+                TeamBadgeView(url: match.awayLogo).frame(width: 20, height: 20)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .background(Color(red: 0.1, green: 0.1, blue: 0.12))
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(
-                    match.isLive ? Color.red.opacity(0.3) : Color.white.opacity(0.05),
-                    lineWidth: 1
-                )
-        )
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Color.predktCard).cornerRadius(10)
     }
 }
