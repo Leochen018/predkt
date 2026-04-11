@@ -151,25 +151,3 @@ struct Match: Identifiable, Codable {
     }
 }
 
-struct LiveMatchResponse: Codable {
-    let fixtureId: Int
-    let home: String; let away: String
-    let status: String; let elapsed: Int?
-    let homeGoals: Int?; let awayGoals: Int?
-    let competition: String
-    let isLive: Bool; let isFinished: Bool
-    let date: String?; let league_id: Int?
-    let homeLogo: String?; let awayLogo: String?
-    let odds: MatchOdds?; let venue: String?
-
-    func toMatch() -> Match {
-        Match(
-            id: String(fixtureId), home: home, away: away, status: status,
-            elapsed: elapsed, homeGoals: homeGoals ?? 0, awayGoals: awayGoals ?? 0,
-            competition: competition, isLive: isLive, isFinished: isFinished,
-            rawDate: date ?? ISO8601DateFormatter().string(from: Date()),
-            leagueId: league_id ?? 0, homeLogo: homeLogo, awayLogo: awayLogo,
-            odds: odds, venue: venue
-        )
-    }
-}

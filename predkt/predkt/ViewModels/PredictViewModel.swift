@@ -156,7 +156,7 @@ final class PredictViewModel: ObservableObject {
         }
 
         return order.map { league in
-            var sorted = groups[league]!.sorted {
+            let sorted = groups[league]!.sorted {
                 let af = isFavouriteMatch($0), bf = isFavouriteMatch($1)
                 if af != bf { return af }
                 if $0.isLive != $1.isLive { return $0.isLive }
@@ -186,7 +186,7 @@ final class PredictViewModel: ObservableObject {
         guard !matchesLoaded else { return }
         isLoading = true; errorMessage = nil
         do {
-            async let matchFetch   = APIManager.fetchAllMatches()
+            async let matchFetch   = APIManager.forceRefresh()
             async let profileFetch = supabaseManager.fetchUserProfile()
             let (fetchedMatches, profile) = try await (matchFetch, profileFetch)
 
