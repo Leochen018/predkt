@@ -354,9 +354,13 @@ final class PredictViewModel: ObservableObject {
         func ans(_ items: [Answer?]) -> [Answer] { items.compactMap { $0 } }
         func players(_ list: [PlayerOdd]?, grp: String, limit: Int = 14) -> [Answer] {
             guard let list = list else { return [] }
-            return list.prefix(limit).compactMap { p in
-                guard p.odd > 1 else { return nil }
-                return Answer(p.name, short: "👤", odds: p.odd, group: "\(grp)_\(p.name)")
+            // Sort by odds ascending (lowest odds = most likely = shown first)
+            let sorted = list.sorted { $0.odd < $1.odd }
+            return sorted.prefix(limit).compactMap { p in
+                guard p.odd > 1, !p.name.isEmpty else { return nil }
+                // ✅ short = player name so locked banner shows "Haaland" not "👤"
+                let shortName = p.name.components(separatedBy: " ").last ?? p.name
+                return Answer(p.name, short: shortName, odds: p.odd, group: "\(grp)_\(p.name)")
             }
         }
 
