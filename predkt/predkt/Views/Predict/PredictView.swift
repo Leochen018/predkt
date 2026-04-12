@@ -1,6 +1,8 @@
 import SwiftUI
 import Supabase
 
+// MARK: - PredictView
+
 struct PredictView: View {
     @StateObject private var viewModel = PredictViewModel()
     @State private var showingQuestions = false
@@ -11,92 +13,9 @@ struct PredictView: View {
         ZStack {
             Color.predktBg.ignoresSafeArea()
             VStack(spacing: 0) {
-
-                // ── Header ─────────────────────────────────────────────────
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("PLAY").font(.system(size: 13, weight: .black))
-                            .foregroundStyle(Color.predktMuted).kerning(2)
-                        Text("Pick your winners").font(.system(size: 20, weight: .black)).foregroundStyle(.white)
-                    }
-                    Spacer()
-                    Button(action: { Task { await viewModel.refreshMatches() } }) {
-                        Image(systemName: "arrow.clockwise").foregroundStyle(Color.predktMuted).font(.system(size: 15))
-                    }
-                }
-                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
-
-                // ── Date Carousel ──────────────────────────────────────────
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(0..<90, id: \.self) { i in
-                                let date = Calendar.current.date(
-                                    byAdding: .day, value: i,
-                                    to: Calendar.current.startOfDay(for: Date())
-                                ) ?? Date()
-                                let isSelected = Calendar.current.isDate(date, inSameDayAs: viewModel.selectedDate)
-                                let hasMatches = viewModel.hasMatches(on: date)
-
-                                GameDateChip(
-                                    date: date,
-                                    isSelected: isSelected,
-                                    hasMatches: hasMatches,
-                                    action: {
-                                        withAnimation(.easeInOut(duration: 0.2)) {
-                                            viewModel.selectedDate = date
-                                        }
-                                    }
-                                )
-                                .id(i)
-                            }
-                        }
-                        .padding(.horizontal, 20).padding(.vertical, 10)
-                    }
-                    .onChange(of: viewModel.selectedDate) {
-                        let today = Calendar.current.startOfDay(for: Date())
-                        let days  = Calendar.current.dateComponents([.day], from: today, to: viewModel.selectedDate).day ?? 0
-                        withAnimation { proxy.scrollTo(max(0, days), anchor: .center) }
-                    }
-                }
-                .background(Color.predktCard.opacity(0.5))
-
-                // ── Content ────────────────────────────────────────────────
-                if viewModel.isLoading {
-                    Spacer()
-                    VStack(spacing: 12) {
-                        ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.predktLime))
-                        Text("Loading matches…").font(.system(size: 13)).foregroundStyle(Color.predktMuted)
-                    }
-                    Spacer()
-                } else if let error = viewModel.errorMessage {
-                    Spacer()
-                    VStack(spacing: 16) {
-                        Text("⚠️").font(.system(size: 40))
-                        Text(error).foregroundStyle(Color.predktCoral).multilineTextAlignment(.center)
-                        Button(action: { Task { await viewModel.refreshMatches() } }) {
-                            Text("Try Again").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
-                                .padding(.horizontal, 24).padding(.vertical, 10)
-                                .background(Color.predktLime).cornerRadius(12)
-                        }
-                    }
-                    .padding(20)
-                    Spacer()
-                } else {
-                    matchContent
-                        .simultaneousGesture(
-                            DragGesture(minimumDistance: 40, coordinateSpace: .local)
-                                .onEnded { value in
-                                    let h = value.translation.width
-                                    let v = abs(value.translation.height)
-                                    guard abs(h) > v * 1.5 else { return }
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        if h < -40 { viewModel.goToNextDay() }
-                                        else if h > 40 { viewModel.goToPreviousDay() }
-                                    }
-                                }
-                        )
-                }
+                headerView
+                carouselView
+                contentView
             }
         }
         .onAppear {
@@ -110,94 +29,241 @@ struct PredictView: View {
         .sheet(isPresented: $showingQuestions) {
             if let match = selectedMatch {
                 QuestionsSheetView(
-                    match: match, viewModel: viewModel,
-                    myPicksCount: myPicksCount, isPresented: $showingQuestions,
-                    onSubmit: { Task { if let p = try? await SupabaseManager.shared.fetchMyPicks() { myPicksCount = p.count } } }
+                    match: match,
+                    viewModel: viewModel,
+                    myPicksCount: myPicksCount,
+                    isPresented: $showingQuestions,
+                    onSubmit: {
+                        Task {
+                            if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
+                                myPicksCount = picks.count
+                            }
+                        }
+                    }
                 )
             }
         }
     }
 
-    // MARK: - Match Content
-
-    @ViewBuilder
-    private var matchContent: some View {
-        if viewModel.matchesByLeague.isEmpty {
-            EmptyMatchesCard(onNext: { viewModel.goToNextDay() })
-        } else {
-            ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 0) {
-                    // Summary bar
-                    HStack {
-                        Text("\(viewModel.filteredMatches.count) MATCHES · \(viewModel.matchesByLeague.count) COMPETITIONS")
-                            .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
-                        Spacer()
-                        if !viewModel.favouriteLeagueIds.isEmpty || !viewModel.favouriteTeamNames.isEmpty {
-                            HStack(spacing: 4) {
-                                Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Color.predktAmber)
-                                Text("FAVES FIRST").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktAmber).kerning(0.5)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
-
-                    ForEach(viewModel.matchesByLeague, id: \.league) { group in
-                        LeagueSection(
-                            league: group.league,
-                            matches: group.matches,
-                            isFavourite: group.isFavourite,
-                            viewModel: viewModel,
-                            onSelect: { match in
-                                viewModel.clearAnswers()
-                                selectedMatch = match
-                                showingQuestions = true
-                            }
-                        )
-                    }
-                    Spacer().frame(height: 80)
+    // ✅ Extracted into separate views so each re-renders independently
+    private var headerView: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("PLAY").font(.system(size: 13, weight: .black))
+                    .foregroundStyle(Color.predktMuted).kerning(2)
+                Text("Pick your winners").font(.system(size: 20, weight: .black)).foregroundStyle(.white)
+            }
+            Spacer()
+            if !viewModel.isLoading {
+                Button(action: { Task { await viewModel.refreshMatches() } }) {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundStyle(Color.predktMuted).font(.system(size: 15))
                 }
             }
+        }
+        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
+    }
+
+    private var carouselView: some View {
+        DateCarousel(
+            selectedDate: viewModel.selectedDate,
+            datesWithMatches: viewModel.datesWithMatches,
+            matchesLoaded: !viewModel.matches.isEmpty,
+            onSelect: { date in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.selectedDate = date
+                }
+                viewModel.scheduleRegroupPublic()
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var contentView: some View {
+        if viewModel.isLoading && viewModel.matches.isEmpty {
+            SkeletonMatchList()
+        } else if let error = viewModel.errorMessage {
+            VStack(spacing: 16) {
+                Spacer()
+                Text("⚠️").font(.system(size: 40))
+                Text(error).foregroundStyle(Color.predktCoral).multilineTextAlignment(.center).padding(.horizontal, 20)
+                Button(action: { Task { await viewModel.refreshMatches() } }) {
+                    Text("Try Again").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 24).padding(.vertical, 10).background(Color.predktLime).cornerRadius(12)
+                }
+                Spacer()
+            }
+        } else {
+            MatchListView(
+                groups: viewModel.groupedMatchesForDate,
+                filteredCount: viewModel.filteredCount,
+                hasFavourites: !viewModel.favouriteLeagueIds.isEmpty || !viewModel.favouriteTeamNames.isEmpty,
+                isFavouriteMatch: { viewModel.isFavouriteMatch($0) },
+                onSelect: { match in
+                    viewModel.clearAnswers()
+                    selectedMatch = match
+                    showingQuestions = true
+                },
+                onNextDay: { viewModel.goToNextDay() },
+                onSwipeLeft: { viewModel.goToNextDay() },
+                onSwipeRight: { viewModel.goToPreviousDay() }
+            )
         }
     }
 }
 
-// MARK: - League Section
+// MARK: - DateCarousel (separate view — only re-renders when date/matches change)
 
-struct LeagueSection: View {
+private struct DateCarousel: View {
+    let selectedDate: Date
+    let datesWithMatches: Set<String>
+    let matchesLoaded: Bool
+    let onSelect: (Date) -> Void
+
+    private static let localFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = .current; f.locale = Locale(identifier: "en_US_POSIX"); return f
+    }()
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(0..<60, id: \.self) { i in
+                        let date = Calendar.current.date(
+                            byAdding: .day, value: i,
+                            to: Calendar.current.startOfDay(for: Date())
+                        ) ?? Date()
+                        let isSelected = Calendar.current.isDate(date, inSameDayAs: selectedDate)
+                        let dateKey    = Self.localFmt.string(from: date)
+                        let hasMatches = matchesLoaded && datesWithMatches.contains(dateKey)
+
+                        GameDateChip(
+                            date: date, isSelected: isSelected, hasMatches: hasMatches,
+                            action: { onSelect(date) }
+                        )
+                        .id(i)
+                    }
+                }
+                .padding(.horizontal, 20).padding(.vertical, 10)
+            }
+            .onChange(of: selectedDate) {
+                let today = Calendar.current.startOfDay(for: Date())
+                let days  = Calendar.current.dateComponents([.day], from: today, to: selectedDate).day ?? 0
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(max(0, min(days, 59)), anchor: .center)
+                }
+            }
+        }
+        .background(Color.predktCard.opacity(0.5))
+    }
+}
+
+// MARK: - MatchListView
+// ✅ Completely isolated — only re-renders when groupedMatchesForDate changes
+// Uses equatable check to skip unnecessary renders
+
+private struct MatchListView: View {
+    let groups: [(league: String, matches: [Match], isFavourite: Bool)]
+    let filteredCount: Int
+    let hasFavourites: Bool
+    let isFavouriteMatch: (Match) -> Bool
+    let onSelect: (Match) -> Void
+    let onNextDay: () -> Void
+    let onSwipeLeft: () -> Void
+    let onSwipeRight: () -> Void
+
+    var body: some View {
+        Group {
+            if groups.isEmpty {
+                EmptyMatchesCard(onNext: onNextDay)
+            } else {
+                matchList
+            }
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 40, coordinateSpace: .local)
+                .onEnded { value in
+                    let h = value.translation.width
+                    let v = abs(value.translation.height)
+                    guard abs(h) > v * 1.5 else { return }
+                    if h < -40 { onSwipeLeft() } else { onSwipeRight() }
+                }
+        )
+    }
+
+    private var matchList: some View {
+        ScrollView(showsIndicators: false) {
+            // ✅ VStack not LazyVStack for the outer container
+            // LazyVStack was causing layout recalculation on every scroll
+            VStack(spacing: 0) {
+                // Summary
+                HStack {
+                    Text("\(filteredCount) MATCHES · \(groups.count) COMPETITIONS")
+                        .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
+                    Spacer()
+                    if hasFavourites {
+                        HStack(spacing: 4) {
+                            Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Color.predktAmber)
+                            Text("FAVES FIRST").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktAmber)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
+
+                // League sections
+                ForEach(groups, id: \.league) { group in
+                    // ✅ Each league section is its own stable view
+                    LeagueSection(
+                        league: group.league,
+                        matches: group.matches,
+                        isFavourite: group.isFavourite,
+                        isFavouriteMatch: isFavouriteMatch,
+                        onSelect: onSelect
+                    )
+                }
+
+                Color.clear.frame(height: 80)
+            }
+        }
+        // ✅ Bounce off prevents scroll fighting with swipe gesture
+        .scrollBounceBehavior(.basedOnSize)
+    }
+}
+
+// MARK: - LeagueSection
+// ✅ Uses @State for expand/collapse — doesn't propagate up
+
+private struct LeagueSection: View {
     let league: String
     let matches: [Match]
     let isFavourite: Bool
-    let viewModel: PredictViewModel
+    let isFavouriteMatch: (Match) -> Bool
     let onSelect: (Match) -> Void
     @State private var isExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
+            // Header
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+            }) {
                 HStack(spacing: 10) {
-                    // ✅ Favourite star accent
                     Rectangle()
                         .fill(isFavourite ? Color.predktAmber : Color.predktLime)
                         .frame(width: 3, height: 16).cornerRadius(2)
-
                     if isFavourite {
                         Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Color.predktAmber)
                     }
-
                     Text(league.uppercased())
                         .font(.system(size: 11, weight: .black))
-                        .foregroundStyle(isFavourite ? Color.predktAmber : .white)
-                        .kerning(0.5)
-
+                        .foregroundStyle(isFavourite ? Color.predktAmber : .white).kerning(0.5)
                     Spacer()
-
                     Text("\(matches.count)")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(isFavourite ? Color.predktAmber : Color.predktLime)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background((isFavourite ? Color.predktAmber : Color.predktLime).opacity(0.12))
                         .cornerRadius(6)
-
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
@@ -206,14 +272,15 @@ struct LeagueSection: View {
             }
             .buttonStyle(PlainButtonStyle())
 
+            // Rows
             if isExpanded {
                 VStack(spacing: 0) {
                     ForEach(matches, id: \.id) { match in
-                        Button(action: { onSelect(match) }) {
-                            MatchRow(match: match, isFavourite: viewModel.isFavouriteMatch(match))
-                        }
-                        .buttonStyle(PlainButtonStyle())
-
+                        MatchRowButton(
+                            match: match,
+                            isFavourite: isFavouriteMatch(match),
+                            onTap: { onSelect(match) }
+                        )
                         if match.id != matches.last?.id {
                             Divider().background(Color.predktBorder).padding(.leading, 70)
                         }
@@ -221,14 +288,37 @@ struct LeagueSection: View {
                 }
                 .background(Color.predktBg)
             }
+
             Divider().background(Color.predktBorder)
         }
     }
 }
 
-// MARK: - Match Row
+// MARK: - MatchRowButton
+// ✅ Equatable so SwiftUI skips re-render if nothing changed
 
-struct MatchRow: View {
+private struct MatchRowButton: View, Equatable {
+    let match: Match
+    let isFavourite: Bool
+    let onTap: () -> Void
+
+    static func == (lhs: MatchRowButton, rhs: MatchRowButton) -> Bool {
+        lhs.match.id == rhs.match.id &&
+        lhs.match.status == rhs.match.status &&
+        lhs.match.homeGoals == rhs.match.homeGoals &&
+        lhs.match.awayGoals == rhs.match.awayGoals &&
+        lhs.isFavourite == rhs.isFavourite
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            MatchRowContent(match: match, isFavourite: isFavourite)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+private struct MatchRowContent: View {
     let match: Match
     let isFavourite: Bool
 
@@ -253,27 +343,26 @@ struct MatchRow: View {
             Rectangle().fill(Color.predktBorder).frame(width: 1, height: 60)
 
             HStack(spacing: 0) {
-                // Home
                 HStack(spacing: 10) {
                     TeamBadgeView(url: match.homeLogo).frame(width: 28, height: 28)
                     Text(match.home).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                // Score or VS
-                if match.isLive || match.isFinished {
-                    VStack(spacing: 2) {
-                        Text(match.score).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
-                        if match.isLive {
-                            Text("LIVE").font(.system(size: 7, weight: .black)).foregroundStyle(Color.predktCoral)
+                Group {
+                    if match.isLive || match.isFinished {
+                        VStack(spacing: 2) {
+                            Text(match.score).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
+                            if match.isLive {
+                                Text("LIVE").font(.system(size: 7, weight: .black)).foregroundStyle(Color.predktCoral)
+                            }
                         }
+                    } else {
+                        Text("vs").font(.system(size: 12)).foregroundStyle(Color.predktMuted)
                     }
-                    .frame(width: 60)
-                } else {
-                    Text("vs").font(.system(size: 12)).foregroundStyle(Color.predktMuted).frame(width: 60)
                 }
+                .frame(width: 60)
 
-                // Away
                 HStack(spacing: 10) {
                     Text(match.away).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
                         .lineLimit(1).multilineTextAlignment(.trailing)
@@ -283,16 +372,67 @@ struct MatchRow: View {
             }
             .padding(.horizontal, 16)
 
-            // ✅ Favourite star indicator
             if isFavourite {
                 Image(systemName: "star.fill")
-                    .font(.system(size: 10)).foregroundStyle(Color.predktAmber)
-                    .frame(width: 28)
+                    .font(.system(size: 10)).foregroundStyle(Color.predktAmber).frame(width: 28)
             }
         }
         .frame(height: 72)
         .background(isFavourite ? Color.predktAmber.opacity(0.04) : Color.predktBg)
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Skeleton Loading
+
+struct SkeletonMatchList: View {
+    @State private var shimmer = false
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 0) {
+                ForEach(0..<3, id: \.self) { _ in SkeletonLeagueSection(shimmer: shimmer) }
+            }
+            .padding(.top, 12)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) { shimmer = true }
+        }
+    }
+}
+
+private struct SkeletonLeagueSection: View {
+    let shimmer: Bool
+    private var c: Color { Color.white.opacity(shimmer ? 0.08 : 0.04) }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Rectangle().fill(Color.predktLime.opacity(0.3)).frame(width: 3, height: 16).cornerRadius(2)
+                RoundedRectangle(cornerRadius: 4).fill(c).frame(width: 120, height: 11)
+                Spacer()
+                RoundedRectangle(cornerRadius: 6).fill(c).frame(width: 24, height: 22)
+            }
+            .padding(.horizontal, 20).padding(.vertical, 12).background(Color.predktCard.opacity(0.5))
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 4).fill(c).frame(width: 28, height: 14).frame(width: 60)
+                    Rectangle().fill(Color.predktBorder).frame(width: 1, height: 60)
+                    HStack {
+                        HStack(spacing: 10) {
+                            Circle().fill(c).frame(width: 28, height: 28)
+                            RoundedRectangle(cornerRadius: 4).fill(c).frame(width: 70, height: 11)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        RoundedRectangle(cornerRadius: 4).fill(c).frame(width: 20, height: 11).frame(width: 60)
+                        HStack(spacing: 10) {
+                            RoundedRectangle(cornerRadius: 4).fill(c).frame(width: 70, height: 11)
+                            Circle().fill(c).frame(width: 28, height: 28)
+                        }.frame(maxWidth: .infinity, alignment: .trailing)
+                    }.padding(.horizontal, 16)
+                }
+                .frame(height: 72).background(Color.predktBg)
+                Divider().background(Color.predktBorder).padding(.leading, 70)
+            }
+            Divider().background(Color.predktBorder)
+        }
     }
 }
 
@@ -304,128 +444,153 @@ struct QuestionsSheetView: View {
     let myPicksCount: Int
     @Binding var isPresented: Bool
     let onSubmit: () -> Void
-    var questions: [PredictViewModel.Question] { viewModel.getQuestions(for: match) }
+    @State private var questions: [PredictViewModel.Question] = []
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.predktBg.ignoresSafeArea()
             VStack(spacing: 0) {
-                // Match header
-                VStack(spacing: 12) {
-                    HStack {
-                        Button(action: { isPresented = false }) {
-                            Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(Color.predktMuted).padding(8)
-                                .background(Color.white.opacity(0.07)).cornerRadius(8)
-                        }
-                        Spacer()
-                        if match.isLive {
-                            HStack(spacing: 4) {
-                                Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
-                                Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
-                                    .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
+                matchHeader
+                if viewModel.isLoadingOdds {
+                    QuestionsSkeleton()
+                } else {
+                    ScrollView(showsIndicators: false) {
+                        LazyVStack(spacing: 20) {
+                            ForEach(questions) { question in
+                                QuestionCard(question: question, viewModel: viewModel)
                             }
+                            Color.clear.frame(height: viewModel.lockedAnswers.isEmpty ? 40 : 110)
                         }
+                        .padding(.horizontal, 16).padding(.top, 16)
                     }
-                    .padding(.horizontal, 20).padding(.top, 16)
-
-                    HStack(spacing: 16) {
-                        TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
-                        VStack(spacing: 2) {
-                            Text(match.displayName).font(.system(size: 15, weight: .black)).foregroundStyle(.white).multilineTextAlignment(.center)
-                            HStack(spacing: 6) {
-                                Text(match.competition).font(.system(size: 11)).foregroundStyle(Color.predktMuted)
-                                if !match.isLive, !match.isFinished {
-                                    Text("·").foregroundStyle(Color.predktMuted)
-                                    Text("\(match.matchDate) · \(match.kickoffTime)").font(.system(size: 11)).foregroundStyle(Color.predktLime)
-                                }
-                            }
-                        }
-                        TeamBadgeView(url: match.awayLogo).frame(width: 36, height: 36)
-                    }
-                    .padding(.horizontal, 20)
-
-                    if !viewModel.lockedAnswers.isEmpty {
-                        LockedAnswersBanner(viewModel: viewModel).padding(.horizontal, 20)
-                    }
-                }
-                .background(Color.predktCard).padding(.bottom, 1)
-
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 20) {
-                        ForEach(questions) { question in
-                            QuestionCard(question: question, viewModel: viewModel)
-                        }
-                        Spacer().frame(height: viewModel.lockedAnswers.isEmpty ? 40 : 110)
-                    }
-                    .padding(.horizontal, 16).padding(.top, 16)
                 }
             }
-
-            if !viewModel.lockedAnswers.isEmpty {
-                VStack(spacing: 0) {
-                    LinearGradient(colors: [Color.predktBg.opacity(0), Color.predktBg], startPoint: .top, endPoint: .bottom).frame(height: 24)
-                    Button(action: {
-                        Task {
-                            let success = await viewModel.submitPlays(match: match, myPicksCount: myPicksCount)
-                            if success { isPresented = false; onSubmit() }
-                        }
-                    }) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(viewModel.isCombo ? "\(viewModel.lockedAnswers.count)-PICK COMBO" : "LOCK IN PLAY")
-                                    .font(.system(size: 11, weight: .black)).foregroundStyle(.black.opacity(0.6)).kerning(1)
-                                Text(viewModel.lockedAnswers.map { $0.shortLabel }.joined(separator: " + "))
-                                    .font(.system(size: 13, weight: .bold)).foregroundStyle(.black).lineLimit(1)
-                            }
-                            Spacer()
-                            if viewModel.isSubmitting {
-                                ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .black))
-                            } else {
-                                HStack(spacing: 4) {
-                                    Text("+\(viewModel.totalXP)").font(.system(size: 22, weight: .black)).foregroundStyle(.black)
-                                    Text("XP").font(.system(size: 14, weight: .black)).foregroundStyle(.black.opacity(0.6))
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 24).frame(height: 62).background(Color.predktLime)
-                    }
-                    .disabled(viewModel.isSubmitting)
-                }
-            }
+            if !viewModel.lockedAnswers.isEmpty { submitBar }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .task {
+            await viewModel.loadOdds(for: match)
+            questions = viewModel.getQuestions(for: match)
+        }
+    }
+
+    private var matchHeader: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Button(action: { isPresented = false }) {
+                    Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.predktMuted).padding(8).background(Color.white.opacity(0.07)).cornerRadius(8)
+                }
+                Spacer()
+                if match.isLive {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
+                        Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
+                            .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
+                    }
+                }
+            }
+            .padding(.horizontal, 20).padding(.top, 16)
+
+            HStack(spacing: 16) {
+                TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
+                VStack(spacing: 2) {
+                    Text(match.displayName).font(.system(size: 15, weight: .black)).foregroundStyle(.white).multilineTextAlignment(.center)
+                    HStack(spacing: 6) {
+                        Text(match.competition).font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                        if !match.isLive, !match.isFinished {
+                            Text("·").foregroundStyle(Color.predktMuted)
+                            Text("\(match.matchDate) · \(match.kickoffTime)").font(.system(size: 11)).foregroundStyle(Color.predktLime)
+                        }
+                    }
+                }
+                TeamBadgeView(url: match.awayLogo).frame(width: 36, height: 36)
+            }
+            .padding(.horizontal, 20)
+
+            if !viewModel.lockedAnswers.isEmpty {
+                LockedAnswersBanner(viewModel: viewModel).padding(.horizontal, 20)
+            }
+        }
+        .background(Color.predktCard).padding(.bottom, 1)
+    }
+
+    private var submitBar: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [Color.predktBg.opacity(0), Color.predktBg], startPoint: .top, endPoint: .bottom).frame(height: 24)
+            Button(action: {
+                Task {
+                    let ok = await viewModel.submitPlays(match: match, myPicksCount: myPicksCount)
+                    if ok { isPresented = false; onSubmit() }
+                }
+            }) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(viewModel.isCombo ? "\(viewModel.lockedAnswers.count)-PICK COMBO" : "LOCK IN PLAY")
+                            .font(.system(size: 11, weight: .black)).foregroundStyle(.black.opacity(0.6)).kerning(1)
+                        Text(viewModel.lockedAnswers.map { $0.shortLabel }.joined(separator: " + "))
+                            .font(.system(size: 13, weight: .bold)).foregroundStyle(.black).lineLimit(1)
+                    }
+                    Spacer()
+                    if viewModel.isSubmitting {
+                        ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .black))
+                    } else {
+                        HStack(spacing: 4) {
+                            Text("+\(viewModel.totalXP)").font(.system(size: 22, weight: .black)).foregroundStyle(.black)
+                            Text("XP").font(.system(size: 14, weight: .black)).foregroundStyle(.black.opacity(0.6))
+                        }
+                    }
+                }
+                .padding(.horizontal, 24).frame(height: 62).background(Color.predktLime)
+            }
+            .disabled(viewModel.isSubmitting)
+        }
     }
 }
 
-// MARK: - Question Card
+struct QuestionsSkeleton: View {
+    @State private var shimmer = false
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 20) {
+                ForEach(0..<4, id: \.self) { _ in
+                    VStack(alignment: .leading, spacing: 14) {
+                        RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(shimmer ? 0.08 : 0.04)).frame(width: 140, height: 10)
+                        RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(shimmer ? 0.08 : 0.04)).frame(height: 14)
+                        ForEach(0..<3, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(shimmer ? 0.06 : 0.03)).frame(height: 52)
+                        }
+                    }
+                    .padding(16).background(Color.predktCard).cornerRadius(18)
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.predktBorder, lineWidth: 1))
+                }
+            }
+            .padding(.horizontal, 16).padding(.top, 16)
+        }
+        .onAppear { withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) { shimmer = true } }
+    }
+}
 
 struct QuestionCard: View {
     let question: PredictViewModel.Question
     @ObservedObject var viewModel: PredictViewModel
     @State private var isExpanded = true
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: { withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() } }) {
                 HStack(spacing: 8) {
                     Text(question.category).font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktLime).kerning(1.5)
                     Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.predktMuted)
                 }
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 10)
             }
             .buttonStyle(PlainButtonStyle())
-
             if isExpanded {
-                Text(question.prompt).font(.system(size: 18, weight: .black)).foregroundStyle(.white)
-                    .padding(.horizontal, 16).padding(.bottom, 14)
+                Text(question.prompt).font(.system(size: 18, weight: .black)).foregroundStyle(.white).padding(.horizontal, 16).padding(.bottom, 14)
                 VStack(spacing: 8) {
-                    ForEach(question.answers) { answer in
-                        AnswerPollRow(answer: answer, viewModel: viewModel)
-                    }
+                    ForEach(question.answers) { answer in AnswerPollRow(answer: answer, viewModel: viewModel) }
                 }
                 .padding(.horizontal, 16).padding(.bottom, 16)
             }
@@ -435,20 +600,12 @@ struct QuestionCard: View {
     }
 }
 
-// MARK: - Answer Poll Row
-
 struct AnswerPollRow: View {
     let answer: PredictViewModel.Answer
     @ObservedObject var viewModel: PredictViewModel
     var isLocked: Bool     { viewModel.isLocked(answer) }
     var isConflicted: Bool { viewModel.conflicts(answer) }
-    var xpColour: Color {
-        switch answer.probability {
-        case 0..<30: return Color.predktCoral
-        case 30..<55: return Color.predktAmber
-        default: return Color.predktLime
-        }
-    }
+    var xpColour: Color { answer.probability < 30 ? Color.predktCoral : answer.probability < 55 ? Color.predktAmber : Color.predktLime }
     var body: some View {
         Button(action: { if !isConflicted { viewModel.lockAnswer(answer) } }) {
             ZStack(alignment: .leading) {
@@ -471,8 +628,7 @@ struct AnswerPollRow: View {
                             if isLocked { Text("TAP TO REMOVE").font(.system(size: 7, weight: .bold)).foregroundStyle(Color.predktLime.opacity(0.7)).kerning(0.5) }
                             Text("+\(answer.xpValue) XP").font(.system(size: 12, weight: .black)).foregroundStyle(isLocked ? Color.predktLime : xpColour)
                         }
-                        Text(answer.probabilityDisplay).font(.system(size: 10))
-                            .foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
+                        Text(answer.probabilityDisplay).font(.system(size: 10)).foregroundStyle(isConflicted ? Color.predktMuted.opacity(0.3) : Color.predktMuted)
                     }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 14)
@@ -488,8 +644,6 @@ struct AnswerPollRow: View {
     }
 }
 
-// MARK: - Locked Answers Banner
-
 struct LockedAnswersBanner: View {
     @ObservedObject var viewModel: PredictViewModel
     var body: some View {
@@ -501,8 +655,7 @@ struct LockedAnswersBanner: View {
                     HStack(spacing: 6) {
                         ForEach(viewModel.lockedAnswers) { answer in
                             Text(answer.shortLabel).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(Color.predktLime.opacity(0.15)).cornerRadius(6)
+                                .padding(.horizontal, 8).padding(.vertical, 4).background(Color.predktLime.opacity(0.15)).cornerRadius(6)
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.predktLime.opacity(0.3), lineWidth: 1))
                         }
                     }
@@ -515,48 +668,29 @@ struct LockedAnswersBanner: View {
             }
         }
         .padding(12).background(Color.predktLime.opacity(0.07)).cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.predktLime.opacity(0.2), lineWidth: 1))
-        .padding(.bottom, 12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.predktLime.opacity(0.2), lineWidth: 1)).padding(.bottom, 12)
     }
 }
 
-// MARK: - Date Chip (with match dot indicator)
-
 struct GameDateChip: View {
-    let date: Date
-    let isSelected: Bool
-    let hasMatches: Bool
-    let action: () -> Void
+    let date: Date; let isSelected: Bool; let hasMatches: Bool; let action: () -> Void
     var isToday: Bool { Calendar.current.isDateInToday(date) }
-
     var body: some View {
         Button(action: action) {
             VStack(spacing: 3) {
-                Text(isToday ? "TODAY" : date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
-                    .font(.system(size: 8, weight: .black)).kerning(1)
-                Text(date.formatted(.dateTime.day()))
-                    .font(.system(size: 17, weight: .black))
-                // ✅ Dot indicates this day has matches
-                if hasMatches {
-                    Circle().fill(isSelected ? Color.black.opacity(0.4) : Color.predktLime)
-                        .frame(width: 4, height: 4)
-                } else {
-                    Color.clear.frame(width: 4, height: 4)
-                }
+                Text(isToday ? "TODAY" : date.formatted(.dateTime.weekday(.abbreviated)).uppercased()).font(.system(size: 8, weight: .black)).kerning(1)
+                Text(date.formatted(.dateTime.day())).font(.system(size: 17, weight: .black))
+                if hasMatches { Circle().fill(isSelected ? Color.black.opacity(0.4) : Color.predktLime).frame(width: 4, height: 4) }
+                else { Color.clear.frame(width: 4, height: 4) }
             }
             .foregroundStyle(isSelected ? .black : hasMatches ? .white : Color.predktMuted)
             .frame(width: 52, height: 64)
             .background(isSelected ? Color.predktLime : Color.predktCard)
             .cornerRadius(14)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(
-                isSelected ? Color.clear : hasMatches ? Color.predktBorder : Color.predktBorder.opacity(0.4),
-                lineWidth: 1
-            ))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(isSelected ? Color.clear : Color.predktBorder, lineWidth: 1))
         }
     }
 }
-
-// MARK: - Empty State
 
 struct EmptyMatchesCard: View {
     let onNext: () -> Void
@@ -564,8 +698,7 @@ struct EmptyMatchesCard: View {
         VStack(spacing: 16) {
             Text("🏟️").font(.system(size: 48))
             Text("No matches today").font(.system(size: 18, weight: .black)).foregroundStyle(.white)
-            Text("Swipe left or tap below to check the next day")
-                .font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
+            Text("Swipe left or tap below to check the next day").font(.system(size: 13)).foregroundStyle(Color.predktMuted).multilineTextAlignment(.center)
             Button(action: onNext) {
                 HStack(spacing: 6) {
                     Text("Next Day").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
