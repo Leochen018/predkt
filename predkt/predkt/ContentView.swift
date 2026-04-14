@@ -56,25 +56,7 @@ struct ContentView: View {
         }
         .onAppear {
             logoPulse = true
-            // Test each notification type — remove after testing
-              DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                  NotificationManager.shared.notifyPickConfirmed(
-                      match: "Arsenal vs Chelsea",
-                      market: "Arsenal Win",
-                      xp: 43
-                  )
-              }
-              DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
-                  NotificationManager.shared.notifyPickResult(
-                      match: "Arsenal vs Chelsea",
-                      market: "Arsenal Win",
-                      result: "correct",
-                      xpEarned: 43
-                  )
-              }
-              DispatchQueue.main.asyncAfter(deadline: .now() + 9) {
-                  NotificationManager.shared.notifyStreakMilestone(streak: 3)
-              }
+           
         }
     }
 
@@ -83,12 +65,14 @@ struct ContentView: View {
     private func runStartup() async {
         let startTime = Date()
 
+        // Fire notification check in background — don't wait for it
+        Task { await NotificationManager.shared.checkStatus() }
+
+        // Wait for matches — uses disk cache so near instant after first launch
         _ = try? await APIManager.fetchAllMatches()
 
-        await NotificationManager.shared.checkStatus()
-
         let elapsed   = Date().timeIntervalSince(startTime)
-        let remaining = max(0, 1.8 - elapsed)
+        let remaining = max(0, 1.0 - elapsed)
         if remaining > 0 {
             try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
         }

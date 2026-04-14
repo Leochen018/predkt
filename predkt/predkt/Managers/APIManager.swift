@@ -115,6 +115,8 @@ final class APIManager {
                 if let fresh = try? await fetchFreshMatches() {
                     saveDiskCache(fresh)
                     await MainActor.run {
+                        // ✅ Don't overwrite live match data with stale backend data
+                        // The live poller handles live matches — only post non-live updates
                         NotificationCenter.default.post(name: .matchesRefreshed, object: fresh)
                     }
                 }
@@ -169,6 +171,15 @@ final class APIManager {
         let matches = try await fetchFreshMatches()
         saveDiskCache(matches)
         return matches
+    }
+    static func fetchLiveMatches() async throws -> [Match] {
+        guard let url = URL(string: "\(baseURL)/api/live") else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.cachePolicy     = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 15
+        let (data, _) = try await session.data(for: request)
+        let decoded   = try JSONDecoder().decode(LiveResponse.self, from: data)
+        return decoded.liveMatches.map { $0.toMatch() }
     }
 
     // ── Lazy odds loading ─────────────────────────────────────────────────────

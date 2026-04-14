@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import Supabase
+import UIKit
 
 @MainActor
 final class PredictViewModel: ObservableObject {
@@ -17,11 +18,14 @@ final class PredictViewModel: ObservableObject {
     @Published var filteredCount: Int = 0
     @Published var favouriteLeagueIds: Set<Int> = []
     @Published var favouriteTeamNames: Set<String> = []
+    @Published var predictedTodayMatches: Set<String> = []
+    private var livePollingTask: Task<Void, Never>?
     
     private var matchesLoaded = false
     private var cancellables = Set<AnyCancellable>()
     private var dateChangeTask: Task<Void, Never>?
     private let supabaseManager = SupabaseManager.shared
+    private var profileLoaded = false
     
     static let leaguePriority: [String] = [
         "Premier League", "Championship", "Champions League", "Europa League",
@@ -255,9 +259,34 @@ final class PredictViewModel: ObservableObject {
             .sink { [weak self] notification in
                 guard let self = self,
                       let fresh = notification.object as? [Match] else { return }
-                self.matches = fresh
+                // ✅ Preserve live match data — don't let background refresh overwrite poll updates
+                let currentLiveIds = Set(self.matches.filter { $0.isLive }.map { $0.id })
+                if currentLiveIds.isEmpty {
+                    self.matches = fresh
+                } else {
+                    // Merge: keep current live match data, update everything else from fresh
+                    self.matches = fresh.map { match in
+                        if currentLiveIds.contains(match.id),
+                           let current = self.matches.first(where: { $0.id == match.id }) {
+                            return current // keep the live-polled version
+                        }
+                        return match
+                    }
+                }
                 self.scheduleRegroup()
+                self.startLivePollingIfNeeded()
             }
+            .store(in: &cancellables)
+
+        // Pause polling when app backgrounds, resume when foregrounded
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.stopLivePolling() }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.startLivePollingIfNeeded() }
             .store(in: &cancellables)
     }
     
@@ -268,26 +297,32 @@ final class PredictViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         do {
-            async let matchFetch   = APIManager.fetchAllMatches()
-            async let profileFetch = supabaseManager.fetchUserProfile()
-            let (fetchedMatches, profile) = try await (matchFetch, profileFetch)
-            
+            // Matches from disk cache — instant
+            let fetchedMatches = try await APIManager.fetchAllMatches()
             matches       = fetchedMatches
             matchesLoaded = true
-            
-            if let s = profile?.favourite_league, !s.isEmpty {
-                favouriteLeagueIds = Set(
-                    s.components(separatedBy: ",")
-                        .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-                )
+
+            // Profile fetch in background — don't block match display
+            Task {
+                if let profile = try? await supabaseManager.fetchUserProfile() {
+                    await MainActor.run {
+                        if let s = profile.favourite_league, !s.isEmpty {
+                            favouriteLeagueIds = Set(
+                                s.components(separatedBy: ",")
+                                    .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                            )
+                        }
+                        if let s = profile.favourite_team, !s.isEmpty {
+                            favouriteTeamNames = Set(
+                                s.components(separatedBy: ",")
+                                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                            )
+                        }
+                    }
+                    await regroup()
+                }
             }
-            if let s = profile?.favourite_team, !s.isEmpty {
-                favouriteTeamNames = Set(
-                    s.components(separatedBy: ",")
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                )
-            }
-            
+
             // Auto-advance to first day with matches if today is empty
             if !datesWithMatches.contains(selectedDateString) {
                 let cal = Calendar.current
@@ -298,15 +333,16 @@ final class PredictViewModel: ObservableObject {
                     break
                 }
             }
-            
+
             await regroup()
             APIManager.prefetchOdds(for: matchesForDate(selectedDate))
-            
+
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
     }
+    
     
     func refreshMatches() async {
         matchesLoaded = false
@@ -331,6 +367,66 @@ final class PredictViewModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    func startLivePollingIfNeeded() {
+        guard livePollingTask == nil || livePollingTask!.isCancelled else { return }
+
+        livePollingTask = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+
+                if let liveUpdates = try? await APIManager.fetchLiveMatches() {
+                    print("🔴 Poll: \(liveUpdates.count) live matches, IDs: \(liveUpdates.map { $0.id })")
+                    let cacheSnapshot = await MainActor.run { self.matches.filter { $0.isLive }.map { "\($0.id) \($0.elapsed ?? 0)'" } }
+                    print("🔴 Cache live: \(cacheSnapshot)")
+                     if liveUpdates.isEmpty {
+                        await MainActor.run { self.stopLivePolling() }
+                        break
+                    }
+
+                    await MainActor.run {
+                        let liveMap = Dictionary(uniqueKeysWithValues: liveUpdates.map { ($0.id, $0) })
+                        var changed = false
+
+                        let updated = self.matches.map { match -> Match in
+                            guard let fresh = liveMap[match.id] else { return match }
+                            if fresh.homeGoals  != match.homeGoals
+                                || fresh.awayGoals  != match.awayGoals
+                                || fresh.elapsed    != match.elapsed
+                                || fresh.isFinished != match.isFinished
+                                || fresh.isLive     != match.isLive {
+                                print("🔴 Updating \(match.id): elapsed \(match.elapsed ?? -1)→\(fresh.elapsed ?? -1) score \(match.homeGoals)-\(match.awayGoals)→\(fresh.homeGoals)-\(fresh.awayGoals)")
+                                changed = true
+                                return fresh
+                            }
+                            return match
+                        }
+                        let boliviaMatch = self.matches.first(where: { $0.id == "1483033" })
+                        let boliviaFresh = liveMap["1483033"]
+                        print("🔴 Bolivia cache: \(boliviaMatch?.elapsed ?? -1)' score:\(boliviaMatch?.homeGoals ?? -1)-\(boliviaMatch?.awayGoals ?? -1)")
+                        print("🔴 Bolivia fresh: \(boliviaFresh?.elapsed ?? -1)' score:\(boliviaFresh?.homeGoals ?? -1)-\(boliviaFresh?.awayGoals ?? -1)")
+                        print("🔴 changed = \(changed)")
+                        if changed {
+                            self.matches = updated
+                            Task { await self.regroup() }
+                            if !updated.contains(where: { $0.isLive }) {
+                                self.stopLivePolling()
+                                NotificationCenter.default.post(name: .matchesRefreshed, object: updated)
+                            }
+                        }
+                    }
+                }
+
+                // 30s between polls — fast enough for live scores
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
+    }
+
+    func stopLivePolling() {
+        livePollingTask?.cancel()
+        livePollingTask = nil
     }
     
     func loadOdds(for match: Match) async {
@@ -782,15 +878,30 @@ final class PredictViewModel: ObservableObject {
             errorMessage = "Lock in at least one answer"
             return false
         }
+        guard !match.isLive else {
+            errorMessage = "You can't predict on a live match"
+            return false
+        }
         
-        // myPicksCount = number of distinct matches predicted today
-        // Allow unlimited picks per match, but max 5 different matches
-        let currentPicks = (try? await supabaseManager.fetchMyPicks()) ?? []
-        let predictedMatchNames = Set(currentPicks.map { $0.match })
-        let isNewMatch = !predictedMatchNames.contains(match.displayName)
-        
-        if isNewMatch && predictedMatchNames.count >= 5 {
-            errorMessage = "You can predict on up to 5 matches per day"
+        // Max 5 different matches per day
+        let isNewMatch = !predictedTodayMatches.contains(match.displayName)
+        if isNewMatch && predictedTodayMatches.count >= 5 {
+            errorMessage = "You've predicted on 5 matches today — that's your limit!"
+            return false
+        }
+
+        // Max 5 picks per match (stacked combo)
+        if lockedAnswers.count > 5 {
+            errorMessage = "You can stack up to 5 picks per match"
+            return false
+        }
+
+        // Also check existing picks on this match + new picks don't exceed 5
+        let existingPicksOnMatch = (try? await supabaseManager.fetchMyPicks())?.filter {
+            $0.match == match.displayName
+        }.count ?? 0
+        if existingPicksOnMatch + lockedAnswers.count > 5 {
+            errorMessage = "You can only have 5 picks per match"
             return false
         }
         

@@ -79,6 +79,11 @@ struct FeedView: View {
         }
         .onAppear { Task { await viewModel.load() } }
         .sheet(isPresented: $viewModel.showInterestsPicker) { InterestsPickerView(viewModel: viewModel) }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("predkt.switchFeedTab"))) { notification in
+            if let tab = notification.object as? Int {
+                withAnimation { selectedTab = tab }
+            }
+        }
     }
 }
 

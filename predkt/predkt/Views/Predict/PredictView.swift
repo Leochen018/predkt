@@ -8,6 +8,7 @@ struct PredictView: View {
     @State private var showingQuestions = false
     @State private var selectedMatch: Match?
     @State private var myPicksCount = 0
+    @State private var showingLimitAlert = false
 
     var body: some View {
         ZStack {
@@ -22,11 +23,43 @@ struct PredictView: View {
             Task {
                 await viewModel.loadMatches()
                 if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
-                    // Count distinct matches, not individual picks
-                    myPicksCount = Set(picks.map { $0.match }).count
+                    let todayStart = Calendar.current.startOfDay(for: Date())
+                    let f = DateFormatter()
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+                    f.timeZone = TimeZone(identifier: "UTC")
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    let todayPicks = picks.filter {
+                        guard let d = f.date(from: $0.created_at) else { return false }
+                        return Calendar.current.startOfDay(for: d) == todayStart
+                    }
+                    myPicksCount = Set(todayPicks.map { $0.match }).count
+                    viewModel.predictedTodayMatches = Set(todayPicks.map { $0.match })
                 }
             }
         }
+        .alert(
+            selectedMatch?.isLive == true ? "Match is live 🔴" : "Daily limit reached 🎯",
+            isPresented: $showingLimitAlert
+        ) {
+            Button("View My Picks") {
+                NotificationCenter.default.post(
+                    name: Notification.Name("predkt.switchTab"),
+                    object: 0
+                )
+                NotificationCenter.default.post(
+                    name: Notification.Name("predkt.switchFeedTab"),
+                    object: 1
+                )
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if selectedMatch?.isLive == true {
+                Text("You can't predict on a match that's already in progress.\n\nView your existing predictions in My Picks.")
+            } else {
+                Text("You've predicted on 5 matches today — that's your limit!\n\nRemove a prediction in My Picks to free up a slot.")
+            }
+        }
+        
         .sheet(isPresented: $showingQuestions) {
             if let match = selectedMatch {
                 QuestionsSheetView(
@@ -35,11 +68,27 @@ struct PredictView: View {
                     myPicksCount: myPicksCount,
                     isPresented: $showingQuestions,
                     onSubmit: {
-                        Task {
-                            if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
-                                myPicksCount = picks.count
+                        // ✅ Update cache immediately — don't wait for network
+                            if let match = selectedMatch {
+                                viewModel.predictedTodayMatches.insert(match.displayName)
+                                myPicksCount = viewModel.predictedTodayMatches.count
                             }
-                        }
+                            // Then refresh from network in background
+                            Task {
+                                if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
+                                    let todayStart = Calendar.current.startOfDay(for: Date())
+                                    let f = DateFormatter()
+                                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+                                    f.timeZone = TimeZone(identifier: "UTC")
+                                    f.locale = Locale(identifier: "en_US_POSIX")
+                                    let todayPicks = picks.filter {
+                                        guard let d = f.date(from: $0.created_at) else { return false }
+                                        return Calendar.current.startOfDay(for: d) == todayStart
+                                    }
+                                    myPicksCount = Set(todayPicks.map { $0.match }).count
+                                    viewModel.predictedTodayMatches = Set(todayPicks.map { $0.match })
+                                }
+                            }
                     }
                 )
             }
@@ -105,6 +154,22 @@ struct PredictView: View {
                 hasFavourites: !viewModel.favouriteLeagueIds.isEmpty || !viewModel.favouriteTeamNames.isEmpty,
                 isFavouriteMatch: { viewModel.isFavouriteMatch($0) },
                 onSelect: { match in
+                    // Rule 1: Never allow predictions on live matches
+                    if match.isLive {
+                        selectedMatch = match
+                        showingLimitAlert = true
+                        return
+                    }
+
+                    // Rule 2: New match but already at 5 match limit
+                    let isNewMatch = !viewModel.predictedTodayMatches.contains(match.displayName)
+                    if isNewMatch && viewModel.predictedTodayMatches.count >= 5 {
+                        selectedMatch = match
+                        showingLimitAlert = true
+                        return
+                    }
+
+                    // Rule 3: Already predicted on this match OR under limit — open sheet
                     viewModel.clearAnswers()
                     selectedMatch = match
                     showingQuestions = true

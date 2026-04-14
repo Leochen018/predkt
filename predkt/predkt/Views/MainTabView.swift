@@ -41,6 +41,12 @@ struct MainTabView: View {
         }
         .tint(Color.predktLime)
         .onAppear { NotificationManager.shared.clearBadge() }
+        
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("predkt.switchTab"))) { notification in
+            if let tab = notification.object as? Int {
+                selectedTab = tab
+            }
+        }
     }
 }
 
