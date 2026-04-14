@@ -403,47 +403,69 @@ function evaluatePick(market, fixture) {
   if(m==="goals odd") return total%2!==0?"correct":"wrong";
   if(m==="goals even") return total%2===0?"correct":"wrong";
   return null;
-}
+
+
 async function resolveCombo(comboId) {
-  // Get all legs of this combo
   const { data: allLegs } = await supabaseAdmin
     .from("picks").select("*").eq("combo_id", comboId);
   if (!allLegs?.length) return;
 
-  // Wait until all legs are resolved (no pending left)
+  // Wait until all legs resolved
   if (allLegs.some(p => p.result === "pending")) return;
 
   const correct = allLegs.filter(p => p.result === "correct").length;
   const total   = allLegs.length;
 
-  // Already handled by normal resolution if all wrong
-  if (correct === 0) return;
+  if (correct === 0) return; // all wrong — no bonus
 
-  // Full combo — already got correct points per leg, nothing extra needed
-  if (correct === total) return;
+  // ── Combo brave bonus ─────────────────────────────────────────────────────
+  // Guaranteed multiplier just for attempting a multi-pick combo
+  const comboMultiplier = { 2: 1.1, 3: 1.2, 4: 1.3, 5: 1.4 }[total] || 1.0;
 
-  // Partial combo — give 25% XP per correct leg as consolation
+  // Rate: full combo = 100%, partial = (correct/total) × 50%
+  const rate = correct === total ? 1.0 : (correct / total) * 0.5;
+
   const { data: profile } = await supabaseAdmin
     .from("profiles").select("*").eq("id", allLegs[0].user_id).single();
   if (!profile) return;
 
-  let totalBonus = 0;
-  for (const leg of allLegs) {
-    if (leg.result !== "correct") continue;
-    const prob  = leg.probability || Math.min(99, Math.max(1, Math.round(100.0 / (leg.odds || 2.0))));
-    const bonus = Math.round(calcPointsWin(prob) * 0.25); // 25% consolation
+  // Base XP from correct legs only
+  const baseXP = allLegs
+    .filter(p => p.result === "correct")
+    .reduce((sum, leg) => {
+      const prob = leg.probability || Math.min(99, Math.max(1, Math.round(100.0 / (leg.odds || 2.0))));
+      return sum + calcPointsWin(prob);
+    }, 0);
+
+  // Final XP = base × combo multiplier × rate
+  const totalBonus = Math.round(baseXP * comboMultiplier * rate);
+
+  // Distribute bonus across correct legs proportionally
+  for (const leg of allLegs.filter(p => p.result === "correct")) {
+    const prob     = leg.probability || Math.min(99, Math.max(1, Math.round(100.0 / (leg.odds || 2.0))));
+    const legBase  = calcPointsWin(prob);
+    const legBonus = Math.round(legBase * comboMultiplier * rate);
     await supabaseAdmin.from("picks")
-      .update({ points_earned: bonus }).eq("id", leg.id);
-    totalBonus += bonus;
+      .update({ points_earned: legBonus }).eq("id", leg.id);
   }
 
-  // Add bonus XP to profile — no streak update for partial
+  // Wrong legs get 0 XP (overrides negative from normal resolution)
+  for (const leg of allLegs.filter(p => p.result === "wrong")) {
+    await supabaseAdmin.from("picks")
+      .update({ points_earned: 0 }).eq("id", leg.id);
+  }
+
+  // Add to profile — no streak update for partial combos
+  const isFullCombo = correct === total;
   await supabaseAdmin.from("profiles").update({
-    total_points:  (profile.total_points  || 0) + totalBonus,
-    weekly_points: (profile.weekly_points || 0) + totalBonus,
+    total_points:      (profile.total_points  || 0) + totalBonus,
+    weekly_points:     (profile.weekly_points || 0) + totalBonus,
+    // Only update streak on full combo win
+    current_streak:    isFullCombo ? (profile.current_streak || 0) + 1 : profile.current_streak || 0,
+    best_streak:       isFullCombo ? Math.max(profile.best_streak || 0, (profile.current_streak || 0) + 1) : profile.best_streak || 0,
   }).eq("id", allLegs[0].user_id);
 
-  console.log(`🎯 Partial combo ${comboId}: ${correct}/${total} correct, +${totalBonus} XP consolation`);
+  console.log(`🎯 Combo ${comboId}: ${correct}/${total} | ×${comboMultiplier} | rate ${Math.round(rate*100)}% | +${totalBonus} XP`);
 }
 
 async function resolvePicksForMatch(fixture) {
@@ -616,4 +638,5 @@ const PORT=process.env.PORT||8080;
 app.listen(PORT,"0.0.0.0",()=>{
   console.log(`✅ Predkt API on port ${PORT}`);
   setTimeout(()=>buildMatchList(), 3000);
-});
+})
+};
