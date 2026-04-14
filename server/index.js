@@ -403,6 +403,7 @@ function evaluatePick(market, fixture) {
   if(m==="goals odd") return total%2!==0?"correct":"wrong";
   if(m==="goals even") return total%2===0?"correct":"wrong";
   return null;
+}
 
 
 async function resolveCombo(comboId) {
@@ -639,4 +640,3 @@ app.listen(PORT,"0.0.0.0",()=>{
   console.log(`✅ Predkt API on port ${PORT}`);
   setTimeout(()=>buildMatchList(), 3000);
 })
-}
