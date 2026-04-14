@@ -639,4 +639,4 @@ app.listen(PORT,"0.0.0.0",()=>{
   console.log(`✅ Predkt API on port ${PORT}`);
   setTimeout(()=>buildMatchList(), 3000);
 })
-};
+}
