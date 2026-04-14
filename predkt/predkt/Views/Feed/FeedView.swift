@@ -303,24 +303,65 @@ struct CommunityComboCard: View {
 }
 
 // MARK: - My Picks Feed
-
 struct MyPicksFeed: View {
     @ObservedObject var viewModel: FeedViewModel
     @State private var confirmDeleteId: String? = nil
     @State private var deletingId: String? = nil
     @State private var toast: String? = nil
 
-    // Group my own picks into combo blocks
-    var myBlocks: [PickComboBlock] { groupPicksIntoCombos(viewModel.myPicks) }
+    // Group by date — newest first
+    private var picksByDate: [(date: Date, blocks: [PickComboBlock])] {
+        let cal = Calendar.current
+        let f1  = ISO8601DateFormatter(); f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let f2  = ISO8601DateFormatter(); f2.formatOptions = [.withInternetDateTime]
+
+        var grouped: [Date: [Pick]] = [:]
+
+        let f3 = DateFormatter()
+        f3.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+        f3.timeZone = TimeZone(identifier: "UTC")
+        f3.locale = Locale(identifier: "en_US_POSIX")
+
+        let f4 = DateFormatter()
+        f4.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f4.timeZone = TimeZone(identifier: "UTC")
+        f4.locale = Locale(identifier: "en_US_POSIX")
+
+        for pick in viewModel.myPicks {
+            let raw = pick.created_at
+            let d = f1.date(from: raw)
+                ?? f2.date(from: raw)
+                ?? f3.date(from: raw)
+                ?? f4.date(from: raw)
+            guard let d = d else {
+                print("⚠️ Failed to parse: \(raw)")
+                continue
+            }
+            let day = cal.startOfDay(for: d)
+            grouped[day, default: []].append(pick)
+        }
+        return grouped
+            .map { (date: $0.key, blocks: groupPicksIntoCombos($0.value)) }
+            .sorted { $0.date > $1.date }
+    }
+
+    private func dateLabel(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date)     { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        let f = DateFormatter(); f.dateFormat = "EEE d MMM"
+        return f.string(from: date)
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 14) {
+                    let _ = print("🔍 myPicks count: \(viewModel.myPicks.count), picksByDate: \(picksByDate.count), sample: \(viewModel.myPicks.first?.created_at ?? "none")")
                     if viewModel.myPicks.isEmpty {
                         VStack(spacing: 16) {
                             Text("🎯").font(.system(size: 48))
-                            Text("No plays today yet")
+                            Text("No plays yet")
                                 .font(.system(size: 18, weight: .black)).foregroundStyle(.white)
                             Text("Head to the Play tab to make your predictions")
                                 .font(.system(size: 13)).foregroundStyle(Color.predktMuted)
@@ -328,7 +369,7 @@ struct MyPicksFeed: View {
                         }
                         .padding(.top, 80).padding(.horizontal, 40)
                     } else {
-                        // Stats bar
+                        // Overall stats bar across all picks
                         let correct = viewModel.myPicks.filter { $0.result == "correct" }.count
                         let wrong   = viewModel.myPicks.filter { $0.result == "wrong"   }.count
                         let pending = viewModel.myPicks.filter { $0.result == "pending" }.count
@@ -338,19 +379,60 @@ struct MyPicksFeed: View {
                             MyStatPill(value: "\(correct)", label: "Correct", colour: Color.predktLime)
                             MyStatPill(value: "\(wrong)",   label: "Wrong",   colour: Color.predktCoral)
                             MyStatPill(value: "\(pending)", label: "Pending", colour: Color.predktAmber)
-                            MyStatPill(value: xp >= 0 ? "+\(xp)" : "\(xp)", label: "XP today",
+                            MyStatPill(value: xp >= 0 ? "+\(xp)" : "\(xp)", label: "XP",
                                        colour: xp >= 0 ? Color.predktLime : Color.predktCoral)
                         }
                         .padding(.horizontal, 16)
 
-                        // Combo blocks
-                        ForEach(myBlocks) { block in
-                            MyComboCard(
-                                block: block,
-                                deletingId: deletingId,
-                                onDelete: { pick in confirmDeleteId = pick.id }
-                            )
-                            .padding(.horizontal, 16)
+                        // Date grouped boxes
+                        ForEach(picksByDate, id: \.date) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+
+                                // Date header
+                                HStack {
+                                    let correct = group.blocks.filter { $0.overallResult == "correct" }.count
+                                    let wrong   = group.blocks.filter { $0.overallResult == "wrong"   }.count
+                                    let pending = group.blocks.filter { $0.overallResult == "pending" }.count
+                                    let accent: Color = pending > 0 ? Color.predktAmber
+                                        : correct > wrong ? Color.predktLime
+                                        : wrong > 0 ? Color.predktCoral : Color.predktMuted
+
+                                    HStack(spacing: 6) {
+                                        Rectangle().fill(accent).frame(width: 3, height: 14).cornerRadius(2)
+                                        Text(dateLabel(group.date).uppercased())
+                                            .font(.system(size: 10, weight: .black)).foregroundStyle(.white).kerning(1)
+                                        Text("· \(group.blocks.count) prediction\(group.blocks.count == 1 ? "" : "s")")
+                                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.predktMuted)
+                                    }
+                                    Spacer()
+                                    // Mini result summary
+                                    HStack(spacing: 8) {
+                                        if correct > 0 {
+                                            Label("\(correct)", systemImage: "checkmark.circle.fill")
+                                                .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktLime)
+                                        }
+                                        if wrong > 0 {
+                                            Label("\(wrong)", systemImage: "xmark.circle.fill")
+                                                .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktCoral)
+                                        }
+                                        if pending > 0 {
+                                            Label("\(pending)", systemImage: "clock.fill")
+                                                .font(.system(size: 10, weight: .bold)).foregroundStyle(Color.predktAmber)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+
+                                // Prediction cards for this date
+                                ForEach(group.blocks) { block in
+                                    MyComboCard(
+                                        block: block,
+                                        deletingId: deletingId,
+                                        onDelete: { pick in confirmDeleteId = pick.id }
+                                    )
+                                    .padding(.horizontal, 16)
+                                }
+                            }
                         }
                     }
                     Spacer().frame(height: 80)
@@ -392,119 +474,6 @@ struct MyPicksFeed: View {
         }
     }
 }
-
-// MARK: - My Combo Card (with remove buttons)
-
-struct MyComboCard: View {
-    let block: PickComboBlock
-    let deletingId: String?
-    let onDelete: (Pick) -> Void
-
-    private func pickColour(_ pick: Pick) -> Color {
-        switch pick.result {
-        case "correct": return Color.predktLime
-        case "wrong":   return Color.predktCoral
-        default:        return Color.predktAmber
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(block.matchName)
-                        .font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1)
-                    if block.isCombo {
-                        Text("\(block.picks.count)-PICK COMBO")
-                            .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktLime).kerning(0.5)
-                    }
-                }
-                Spacer()
-                Text("+\(block.totalXP) XP")
-                    .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktLime)
-            }
-            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
-
-            Divider().background(Color.predktBorder)
-
-            // Picks
-            ForEach(block.picks) { pick in
-                HStack(spacing: 12) {
-                    // Status icon
-                    Image(systemName: pick.result == "correct" ? "checkmark.circle.fill"
-                          : pick.result == "wrong" ? "xmark.circle.fill" : "clock.fill")
-                        .font(.system(size: 18)).foregroundStyle(pickColour(pick)).frame(width: 24)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(pick.market)
-                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(2)
-                        HStack(spacing: 4) {
-                            Text(pick.result == "pending" ? "⏳ Pending"
-                                 : pick.result == "correct" ? "✓ Correct" : "✗ Wrong")
-                                .font(.system(size: 10, weight: .semibold)).foregroundStyle(pickColour(pick))
-                            if let earned = pick.points_earned {
-                                Text("· \(earned >= 0 ? "+" : "")\(earned) XP")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(earned >= 0 ? Color.predktLime : Color.predktCoral)
-                            } else {
-                                Text("· +\(pick.points_possible) XP possible")
-                                    .font(.system(size: 10)).foregroundStyle(Color.predktMuted)
-                            }
-                        }
-                    }
-
-                    Spacer()
-
-                    // Remove button (only pending)
-                    if pick.result == "pending" {
-                        if deletingId == pick.id {
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: Color.predktCoral))
-                                .scaleEffect(0.8)
-                        } else {
-                            Button(action: { onDelete(pick) }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "trash").font(.system(size: 10))
-                                    Text("Remove").font(.system(size: 10, weight: .semibold))
-                                }
-                                .foregroundStyle(Color.predktCoral)
-                                .padding(.horizontal, 8).padding(.vertical, 5)
-                                .background(Color.predktCoral.opacity(0.1)).cornerRadius(7)
-                                .overlay(RoundedRectangle(cornerRadius: 7)
-                                    .stroke(Color.predktCoral.opacity(0.3), lineWidth: 1))
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .opacity(deletingId == pick.id ? 0.4 : 1.0)
-
-                if pick.id != block.picks.last?.id {
-                    Divider().background(Color.predktBorder.opacity(0.4)).padding(.leading, 52)
-                }
-            }
-
-            Spacer().frame(height: 10)
-        }
-        .background(Color.predktCard).cornerRadius(16)
-        .overlay(RoundedRectangle(cornerRadius: 16)
-            .stroke(block.isCombo ? Color.predktLime.opacity(0.15) : Color.predktBorder, lineWidth: 1))
-    }
-}
-
-struct MyStatPill: View {
-    let value: String; let label: String; let colour: Color
-    var body: some View {
-        VStack(spacing: 2) {
-            Text(value).font(.system(size: 18, weight: .black)).foregroundStyle(colour)
-            Text(label).font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted)
-        }
-        .frame(maxWidth: .infinity).padding(.vertical, 12)
-        .background(Color.predktCard).cornerRadius(12)
-    }
-}
-
 // MARK: - Following Feed
 
 struct FollowingFeed: View {
@@ -639,7 +608,7 @@ struct FollowingMatchCard: View {
             .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
             HStack(spacing: 0) {
                 VStack(spacing: 6) {
-                    TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
+                    TeamBadgeView(url: match.homeLogo, teamName: match.home).frame(width: 36, height: 36)
                     Text(match.home).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
                         .lineLimit(2).multilineTextAlignment(.center)
                 }.frame(maxWidth: .infinity)
@@ -649,7 +618,7 @@ struct FollowingMatchCard: View {
                     Text("VS").font(.system(size: 14, weight: .black)).foregroundStyle(Color.predktMuted).frame(width: 70)
                 }
                 VStack(spacing: 6) {
-                    TeamBadgeView(url: match.awayLogo).frame(width: 36, height: 36)
+                    TeamBadgeView(url: match.awayLogo, teamName: match.away).frame(width: 36, height: 36)
                     Text(match.away).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
                         .lineLimit(2).multilineTextAlignment(.center)
                 }.frame(maxWidth: .infinity)
@@ -727,7 +696,7 @@ struct ArenaMatchCard: View {
             .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
             HStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    TeamBadgeView(url: match.homeLogo)
+                    TeamBadgeView(url: match.homeLogo, teamName: match.home)
                     Text(match.home).font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if match.isLive || match.isFinished {
@@ -741,7 +710,7 @@ struct ArenaMatchCard: View {
                 HStack(spacing: 10) {
                     Text(match.away).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
                         .lineLimit(1).multilineTextAlignment(.trailing)
-                    TeamBadgeView(url: match.awayLogo)
+                    TeamBadgeView(url: match.awayLogo, teamName: match.away)
                 }.frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 14)
@@ -775,7 +744,7 @@ struct ArenaLiveCard: View {
             }
             HStack {
                 HStack(spacing: 10) {
-                    TeamBadgeView(url: match.homeLogo)
+                    TeamBadgeView(url: match.homeLogo, teamName: match.home)
                     Text(match.home).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
                 }
                 Spacer()
@@ -783,7 +752,7 @@ struct ArenaLiveCard: View {
                 Spacer()
                 HStack(spacing: 10) {
                     Text(match.away).font(.system(size: 16, weight: .black)).foregroundStyle(.white)
-                    TeamBadgeView(url: match.awayLogo)
+                    TeamBadgeView(url: match.awayLogo, teamName: match.away)
                 }
             }
         }
@@ -815,10 +784,118 @@ struct ArenaInterestsPrompt: View {
 struct ArenaEmptyState: View {
     var body: some View {
         VStack(spacing: 12) {
-            Text("⚽").font(.system(size: 44))
+            Text("🏟️").font(.system(size: 44))
             Text("The arena is quiet").font(.system(size: 18, weight: .black)).foregroundStyle(.white)
             Text("No plays yet today. Be the first!").font(.system(size: 13)).foregroundStyle(Color.predktMuted)
         }
         .padding(.top, 80)
+    }
+}
+struct MyStatPill: View {
+    let value: String; let label: String; let colour: Color
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(value).font(.system(size: 18, weight: .black)).foregroundStyle(colour)
+            Text(label).font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 12)
+        .background(Color.predktCard).cornerRadius(12)
+    }
+}
+
+struct MyComboCard: View {
+    let block: PickComboBlock
+    let deletingId: String?
+    let onDelete: (Pick) -> Void
+
+    private func pickColour(_ pick: Pick) -> Color {
+        switch pick.result {
+        case "correct": return Color.predktLime
+        case "wrong":   return Color.predktCoral
+        default:        return Color.predktAmber
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(block.matchName)
+                        .font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1)
+                    if block.isCombo {
+                        Text("\(block.picks.count)-PICK COMBO")
+                            .font(.system(size: 9, weight: .black)).foregroundStyle(Color.predktLime).kerning(0.5)
+                    }
+                }
+                Spacer()
+                Text("+\(block.totalXP) XP")
+                    .font(.system(size: 13, weight: .black)).foregroundStyle(Color.predktLime)
+            }
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+
+            Divider().background(Color.predktBorder)
+
+            // Picks
+            ForEach(block.picks) { pick in
+                HStack(spacing: 12) {
+                    Image(systemName: pick.result == "correct" ? "checkmark.circle.fill"
+                          : pick.result == "wrong" ? "xmark.circle.fill" : "clock.fill")
+                        .font(.system(size: 18)).foregroundStyle(pickColour(pick)).frame(width: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(pick.market)
+                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(2)
+                        HStack(spacing: 4) {
+                            Text(pick.result == "pending" ? "⏳ Pending"
+                                 : pick.result == "correct" ? "✓ Correct" : "✗ Wrong")
+                                .font(.system(size: 10, weight: .semibold)).foregroundStyle(pickColour(pick))
+                            if let earned = pick.points_earned {
+                                Text("· \(earned >= 0 ? "+" : "")\(earned) XP")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(earned >= 0 ? Color.predktLime : Color.predktCoral)
+                            } else {
+                                Text("· +\(pick.points_possible) XP possible")
+                                    .font(.system(size: 10)).foregroundStyle(Color.predktMuted)
+                            }
+                        }
+                    }
+
+                    Spacer()
+
+                    // Remove button — only for pending picks
+                    if pick.result == "pending" {
+                        if deletingId == pick.id {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: Color.predktCoral))
+                                .scaleEffect(0.8)
+                        } else {
+                            Button(action: { onDelete(pick) }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "trash").font(.system(size: 10))
+                                    Text("Remove").font(.system(size: 10, weight: .semibold))
+                                }
+                                .foregroundStyle(Color.predktCoral)
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(Color.predktCoral.opacity(0.1)).cornerRadius(7)
+                                .overlay(RoundedRectangle(cornerRadius: 7)
+                                    .stroke(Color.predktCoral.opacity(0.3), lineWidth: 1))
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .opacity(deletingId == pick.id ? 0.4 : 1.0)
+
+                if pick.id != block.picks.last?.id {
+                    Divider().background(Color.predktBorder.opacity(0.4)).padding(.leading, 52)
+                }
+            }
+
+            Spacer().frame(height: 10)
+        }
+        .background(Color.predktCard).cornerRadius(16)
+        .overlay(RoundedRectangle(cornerRadius: 16)
+            .stroke(block.isCombo ? Color.predktLime.opacity(0.15) : Color.predktBorder, lineWidth: 1))
     }
 }

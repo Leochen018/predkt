@@ -22,7 +22,8 @@ struct PredictView: View {
             Task {
                 await viewModel.loadMatches()
                 if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
-                    myPicksCount = picks.count
+                    // Count distinct matches, not individual picks
+                    myPicksCount = Set(picks.map { $0.match }).count
                 }
             }
         }
@@ -339,7 +340,7 @@ private struct MatchRowContent: View {
 
             HStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    TeamBadgeView(url: match.homeLogo).frame(width: 28, height: 28)
+                    TeamBadgeView(url: match.homeLogo, teamName: match.home).frame(width: 28, height: 28)
                     Text(match.home)
                         .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 }
@@ -363,7 +364,7 @@ private struct MatchRowContent: View {
                     Text(match.away)
                         .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
                         .lineLimit(1).multilineTextAlignment(.trailing)
-                    TeamBadgeView(url: match.awayLogo).frame(width: 28, height: 28)
+                    TeamBadgeView(url: match.awayLogo, teamName: match.away).frame(width: 28, height: 28)
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
@@ -492,7 +493,7 @@ struct QuestionsSheetView: View {
             .padding(.horizontal, 20).padding(.top, 16)
 
             HStack(spacing: 16) {
-                TeamBadgeView(url: match.homeLogo).frame(width: 36, height: 36)
+                TeamBadgeView(url: match.homeLogo, teamName: match.home).frame(width: 36, height: 36)
                 VStack(spacing: 2) {
                     Text(match.displayName)
                         .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
@@ -506,7 +507,7 @@ struct QuestionsSheetView: View {
                         }
                     }
                 }
-                TeamBadgeView(url: match.awayLogo).frame(width: 36, height: 36)
+                TeamBadgeView(url: match.awayLogo, teamName: match.away).frame(width: 36, height: 36)
             }
             .padding(.horizontal, 20)
 

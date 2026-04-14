@@ -35,16 +35,31 @@ final class NotificationManager: ObservableObject {
     // MARK: - Request Permission
 
     func requestPermission() async {
-        do {
-            let granted = try await UNUserNotificationCenter.current()
-                .requestAuthorization(options: [.alert, .sound, .badge])
-            isAuthorized = granted
-            if granted {
-                scheduleDailyReminder()
-                print("✅ Notifications authorised")
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        
+        switch settings.authorizationStatus {
+        case .notDetermined:
+            // First time — show the system dialog
+            do {
+                let granted = try await UNUserNotificationCenter.current()
+                    .requestAuthorization(options: [.alert, .sound, .badge])
+                isAuthorized = granted
+                if granted {
+                    scheduleDailyReminder()
+                    print("✅ Notifications authorised")
+                }
+            } catch {
+                print("❌ Notification permission error: \(error)")
             }
-        } catch {
-            print("❌ Notification permission error: \(error)")
+        case .denied:
+            // Already denied — can only re-enable via Settings
+            openSettings()
+        case .authorized, .provisional, .ephemeral:
+            // Already on — nothing to do
+            isAuthorized = true
+            scheduleDailyReminder()
+        @unknown default:
+            openSettings()
         }
     }
 
@@ -114,7 +129,7 @@ final class NotificationManager: ObservableObject {
         guard isAuthorized, streak > 0, streak % 3 == 0 else { return }
         let content   = UNMutableNotificationContent()
         content.title = "🔥 \(streak) win streak!"
-        content.body  = "You're on fire — keep going for bigger XP multipliers!"
+        content.body  = "You're on fire — your XP multiplier is now ×\(String(format: "%.1f", min(2.0, 1.0 + Double(streak) * 0.1)))"
         content.sound = .default
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 2, repeats: false)
         let request = UNNotificationRequest(identifier: "streak_\(streak)", content: content, trigger: trigger)
@@ -147,3 +162,4 @@ final class NotificationManager: ObservableObject {
         UNUserNotificationCenter.current().setBadgeCount(0, withCompletionHandler: nil)
     }
 }
+

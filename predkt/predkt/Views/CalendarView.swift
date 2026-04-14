@@ -46,15 +46,17 @@ struct CalendarView: View {
                             .padding(.horizontal, 16)
 
                         // Today's picks preview
-                        if !viewModel.todayPicks.isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("TODAY'S PLAYS")
+                        // Full pick history grouped by date
+                        if !viewModel.picksByDate.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("PREDICTION HISTORY")
                                     .font(.system(size: 10, weight: .black))
                                     .foregroundStyle(Color.predktMuted).kerning(1.5)
                                     .padding(.horizontal, 16)
 
-                                ForEach(viewModel.todayPicks) { pick in
-                                    CalendarPickRow(pick: pick).padding(.horizontal, 16)
+                                ForEach(viewModel.picksByDate, id: \.date) { group in
+                                    PickHistoryDateBox(date: group.date, picks: group.picks)
+                                        .padding(.horizontal, 16)
                                 }
                             }
                         }
@@ -439,5 +441,182 @@ struct StreakStat: View {
             Text(label).font(.system(size: 8, weight: .bold)).foregroundStyle(Color.predktMuted).kerning(1)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+// MARK: - Pick History Date Box
+
+struct PickHistoryDateBox: View {
+    let date: Date
+    let picks: [Pick]
+
+    private var dateLabel: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date)     { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        let f = DateFormatter(); f.dateFormat = "EEE d MMM"
+        return f.string(from: date)
+    }
+
+    private var correct: Int { picks.filter { $0.result == "correct" }.count }
+    private var wrong:   Int { picks.filter { $0.result == "wrong"   }.count }
+    private var pending: Int { picks.filter { $0.result == "pending" }.count }
+    private var xpTotal: Int { picks.compactMap { $0.points_earned }.reduce(0, +) }
+
+    private var boxAccentColour: Color {
+        if pending > 0     { return Color.predktAmber }
+        if correct > wrong { return Color.predktLime }
+        if wrong > 0       { return Color.predktCoral }
+        return Color.predktMuted
+    }
+
+    // Group combo picks together — combos count as 1 prediction
+    private var predictions: [[Pick]] {
+        var groups: [[Pick]] = []
+        var seen = Set<String>()
+        for pick in picks {
+            if let comboId = pick.combo_id, !comboId.isEmpty {
+                if !seen.contains(comboId) {
+                    seen.insert(comboId)
+                    groups.append(picks.filter { $0.combo_id == comboId })
+                }
+            } else {
+                groups.append([pick])
+            }
+        }
+        return groups
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Date header
+            HStack {
+                HStack(spacing: 6) {
+                    Rectangle()
+                        .fill(boxAccentColour)
+                        .frame(width: 3, height: 14).cornerRadius(2)
+                    Text(dateLabel.uppercased())
+                        .font(.system(size: 10, weight: .black))
+                        .foregroundStyle(.white).kerning(1)
+                    Text("· \(predictions.count) prediction\(predictions.count == 1 ? "" : "s")")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.predktMuted)
+                }
+                Spacer()
+                HStack(spacing: 8) {
+                    if correct > 0 {
+                        Label("\(correct)", systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.predktLime)
+                    }
+                    if wrong > 0 {
+                        Label("\(wrong)", systemImage: "xmark.circle.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.predktCoral)
+                    }
+                    if pending > 0 {
+                        Label("\(pending)", systemImage: "clock.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.predktAmber)
+                    }
+                    if xpTotal != 0 {
+                        Text(xpTotal > 0 ? "+\(xpTotal) XP" : "\(xpTotal) XP")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundStyle(xpTotal > 0 ? Color.predktLime : Color.predktCoral)
+                    }
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(Color.predktCard)
+
+            Divider().background(Color.predktBorder)
+
+            VStack(spacing: 0) {
+                ForEach(Array(predictions.enumerated()), id: \.offset) { index, group in
+                    if group.count > 1 {
+                        ComboPredictionCard(picks: group)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                    } else if let pick = group.first {
+                        CalendarPickCard(pick: pick)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                    }
+                    if index < predictions.count - 1 {
+                        Divider().background(Color.predktBorder).padding(.horizontal, 12)
+                    }
+                }
+            }
+            .background(Color.predktBg)
+        }
+        .cornerRadius(14)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(boxAccentColour.opacity(0.25), lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Combo Prediction Card
+
+struct ComboPredictionCard: View {
+    let picks: [Pick]
+
+    private var overallResult: String {
+        if picks.allSatisfy({ $0.result == "correct" }) { return "correct" }
+        if picks.contains(where: { $0.result == "wrong" }) { return "wrong" }
+        return "pending"
+    }
+    private var resultColour: Color {
+        switch overallResult {
+        case "correct": return Color.predktLime
+        case "wrong":   return Color.predktCoral
+        default:        return Color.predktAmber
+        }
+    }
+    private var resultIcon: String {
+        switch overallResult {
+        case "correct": return "checkmark.circle.fill"
+        case "wrong":   return "xmark.circle.fill"
+        default:        return "clock.fill"
+        }
+    }
+    private var totalXP: Int {
+        picks.compactMap { $0.points_earned }.reduce(0, +)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: resultIcon)
+                    .font(.system(size: 16)).foregroundStyle(resultColour)
+                Text("\(picks.count)-PICK COMBO")
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundStyle(resultColour).kerning(1)
+                Spacer()
+                if totalXP != 0 {
+                    Text(totalXP > 0 ? "+\(totalXP) XP" : "\(totalXP) XP")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(totalXP > 0 ? Color.predktLime : Color.predktCoral)
+                }
+            }
+            ForEach(picks) { pick in
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(pick.result == "correct" ? Color.predktLime :
+                              pick.result == "wrong"   ? Color.predktCoral : Color.predktAmber)
+                        .frame(width: 6, height: 6)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(pick.market)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white).lineLimit(1)
+                        Text(pick.match)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.predktMuted).lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.predktCard)
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(resultColour.opacity(0.2), lineWidth: 1))
     }
 }

@@ -67,13 +67,7 @@ final class APIManager {
         return URLSession(configuration: config)
     }()
 
-    // Separate session for images — uses disk cache aggressively
-    static let imageSession: URLSession = {
-        let config  = URLSessionConfiguration.default
-        config.urlCache       = URLCache(memoryCapacity: 30*1024*1024, diskCapacity: 150*1024*1024)
-        config.requestCachePolicy = .returnCacheDataElseLoad
-        return URLSession(configuration: config)
-    }()
+  
 
     // ── Disk cache ────────────────────────────────────────────────────────────
     private static let cacheFile: URL = {

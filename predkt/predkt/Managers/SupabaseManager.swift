@@ -1,7 +1,7 @@
 import Foundation
 import Supabase
 import Combine
-
+import UserNotifications
 @MainActor
 final class SupabaseManager: ObservableObject {
     static let shared = SupabaseManager()
@@ -43,8 +43,12 @@ final class SupabaseManager: ObservableObject {
                 self.session = currentSession
                 self.user = currentSession.user
                 print("✅ Session: \(currentSession.user.email ?? "?")")
-                // Schedule daily reminder when user logs in
-                await NotificationManager.shared.requestPermission()
+                
+                let settings = await UNUserNotificationCenter.current().notificationSettings()
+                if settings.authorizationStatus == .notDetermined {
+                    await NotificationManager.shared.requestPermission()
+                }
+                await NotificationManager.shared.checkStatus()
                 NotificationManager.shared.scheduleDailyReminder()
                 NotificationManager.shared.clearBadge()
             } catch {
@@ -57,7 +61,10 @@ final class SupabaseManager: ObservableObject {
         let response = try await client.auth.signIn(email: email, password: password)
         self.session = response; self.user = response.user
         // Request notifications on login
-        await NotificationManager.shared.requestPermission()
+        await NotificationManager.shared.checkStatus()
+        if !NotificationManager.shared.isAuthorized {
+            await NotificationManager.shared.requestPermission()
+        }
         NotificationManager.shared.scheduleDailyReminder()
     }
 
@@ -88,19 +95,44 @@ final class SupabaseManager: ObservableObject {
 
     func fetchMyPicks() async throws -> [Pick] {
         guard let userId = user?.id else { throw NSError(domain: "No user", code: -1) }
-        let today = Calendar.current.startOfDay(for: Date()).toISO8601String()
-        return try await client
+        let picks: [Pick] = try await client
             .from("picks").select("*")
-            .eq("user_id", value: userId)
-            .gte("created_at", value: today)
+            .eq("user_id", value: userId.uuidString.lowercased())
             .order("created_at", ascending: false)
             .execute().value
-    }
+        
+        print("🔍 Picks returned: \(picks.count)")
+          if let first = picks.first {
+              print("🔍 Sample created_at: \(first.created_at)")
+              print("🔍 Sample user_id: \(first.user_id)")
+          }
+        
 
+        for pick in picks where pick.result == "correct" || pick.result == "wrong" {
+            guard let xp = pick.points_earned, xp != 0 else { continue }
+            let notifiedKey = "notified_\(pick.id)"
+            guard !UserDefaults.standard.bool(forKey: notifiedKey) else { continue }
+            UserDefaults.standard.set(true, forKey: notifiedKey)
+            NotificationManager.shared.notifyPickResult(
+                match:    pick.match,
+                market:   pick.market,
+                result:   pick.result,
+                xpEarned: xp
+            )
+        }
+
+        return picks
+    }
     func fetchUserProfile() async throws -> UserProfile? {
         guard let userId = user?.id else { return nil }
         let response = try await client.from("profiles").select("*").eq("id", value: userId).execute()
         let profiles = try JSONDecoder().decode([UserProfile].self, from: response.data)
+        
+        // ✅ Fire streak milestone notification if applicable
+        if let streak = profiles.first?.current_streak {
+            NotificationManager.shared.notifyStreakMilestone(streak: streak)
+        }
+        
         return profiles.first
     }
 

@@ -247,33 +247,24 @@ struct ProfileView: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Notifications").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
-                    Text(notifManager.isAuthorized ? "Match reminders & results enabled" : "Disabled — tap to turn on")
+                    Text(notifManager.isAuthorized ? "Match reminders & results enabled" : "Tap to enable - or turn on in Settings")
                         .font(.system(size: 11)).foregroundStyle(Color.predktMuted)
                 }
 
                 Spacer()
 
-                if notifManager.isAuthorized {
-                    // ✅ Toggle ON→OFF opens Settings (iOS requirement)
-                    // Toggle state reflects real permission state via scenePhase observer
-                    Toggle("", isOn: .constant(true))
-                        .labelsHidden()
-                        .tint(Color.predktLime)
-                        .onTapGesture {
-                            // Inform user, then open Settings
+                Toggle("", isOn: Binding(
+                    get: { notifManager.isAuthorized },
+                    set: { _ in
+                        if notifManager.isAuthorized {
                             notifManager.openSettings()
+                        } else {
+                            Task { await notifManager.requestPermission() }
                         }
-                } else {
-                    // ✅ Toggle OFF→ON requests permission directly
-                    Toggle("", isOn: .constant(false))
-                        .labelsHidden()
-                        .tint(Color.predktLime)
-                        .onTapGesture {
-                            Task {
-                                await notifManager.requestPermission()
-                            }
-                        }
-                }
+                    }
+                ))
+                .labelsHidden()
+                .tint(Color.predktLime)
             }
             .padding(16)
 
