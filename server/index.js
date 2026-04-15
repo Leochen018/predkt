@@ -795,18 +795,38 @@ app.get("/api/matches", async(req,res)=>{
   catch(err){ console.error("❌",err.message); res.status(500).json({error:err.message}); }
 });
 
-app.get("/api/odds/:fixtureId", async(req,res)=>{
-  const id=parseInt(req.params.fixtureId);
-  if(!id) return res.status(400).json({error:"Invalid ID"});
-  const fixture=matchCache.data?.find(f=>f.fixtureId===id);
-  if(fixture&&(fixture.isLive||fixture.isFinished)) return res.json({odds:null});
-  // Clear odds cache for this fixture so we re-fetch with merged bookmakers
-  oddsCache.delete(id);
-  try{
-    const odds=await fetchOddsForId(id);
-    res.set("Cache-Control","public, max-age=3600");
-    res.json({odds});
-  }catch(err){res.status(500).json({error:err.message});}
+app.get("/api/odds-debug/:fixtureId", async(req,res)=>{
+    const id = parseInt(req.params.fixtureId);
+    if (!id) return res.status(400).json({ error: "Invalid ID" });
+    const headers = { "x-apisports-key": process.env.API_FOOTBALL_KEY };
+    const bookmakerIds = [2, 4, 7, 8, 1, 6];
+    try {
+        const results = await Promise.all(
+            bookmakerIds.map(async bm => {
+                const data = await fetch(`${API_BASE}/odds?fixture=${id}&bookmaker=${bm}`, {
+                    headers, signal: AbortSignal.timeout(8000)
+                }).then(r => r.json());
+                const bets = data.response?.[0]?.bookmakers?.[0]?.bets || [];
+
+                // Find actual goalscorer markets by name
+                const goalscorer = bets.filter(b =>
+                    b.name?.toLowerCase().match(/goalscorer|to score|scorer|hat.?trick|brace/)
+                );
+
+                return {
+                    bookmaker:       bm,
+                    totalMarkets:    bets.length,
+                    allMarketNames:  bets.map(b => `[${b.id}] ${b.name}`),
+                    goalscorerMarkets: goalscorer.map(b => ({
+                        id:      b.id,
+                        name:    b.name,
+                        players: b.values?.slice(0, 8).map(v => v.value) || []
+                    }))
+                };
+            })
+        );
+        res.json({ fixtureId: id, bookmakers: results });
+    } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get("/api/live", async(req,res)=>{
