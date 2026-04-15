@@ -729,32 +729,37 @@ app.get("/", (req,res) => res.send("Predkt API 🚀"));
 
 // ✅ Debug route — check odds for any fixture, see raw player prop data
 app.get("/api/odds-debug/:fixtureId", async(req,res)=>{
-  const id = parseInt(req.params.fixtureId);
-  if (!id) return res.status(400).json({ error: "Invalid ID" });
-  const headers = { "x-apisports-key": process.env.API_FOOTBALL_KEY };
-  const bookmakerIds = [2, 4, 7, 8, 1, 6];
-  try {
-    const results = await Promise.all(
-      bookmakerIds.map(async bm => {
-        const data = await fetch(`${API_BASE}/odds?fixture=${id}&bookmaker=${bm}`, {headers}).then(r=>r.json());
-        const bets = data.response?.[0]?.bookmakers?.[0]?.bets || [];
-        const playerBets = bets.filter(b =>
-          [26,27,28,29,30,31,32].includes(b.id) || b.name?.includes("Goalscorer") || b.name?.includes("Player")
+    const id = parseInt(req.params.fixtureId);
+    if (!id) return res.status(400).json({ error: "Invalid ID" });
+    const headers = { "x-apisports-key": process.env.API_FOOTBALL_KEY };
+    const bookmakerIds = [2, 4, 7, 8, 1, 6];
+    try {
+        const results = await Promise.all(
+            bookmakerIds.map(async bm => {
+                const data = await fetch(`${API_BASE}/odds?fixture=${id}&bookmaker=${bm}`, {
+                    headers, signal: AbortSignal.timeout(8000)
+                }).then(r => r.json());
+                const bets = data.response?.[0]?.bookmakers?.[0]?.bets || [];
+
+                // Find actual goalscorer markets by name
+                const goalscorer = bets.filter(b =>
+                    b.name?.toLowerCase().match(/goalscorer|to score|scorer|hat.?trick|brace/)
+                );
+
+                return {
+                    bookmaker:       bm,
+                    totalMarkets:    bets.length,
+                    allMarketNames:  bets.map(b => `[${b.id}] ${b.name}`),
+                    goalscorerMarkets: goalscorer.map(b => ({
+                        id:      b.id,
+                        name:    b.name,
+                        players: b.values?.slice(0, 8).map(v => v.value) || []
+                    }))
+                };
+            })
         );
-        return {
-          bookmaker: bm,
-          totalMarkets: bets.length,
-          playerMarkets: playerBets.length,
-          playerSample: playerBets.slice(0,2).map(b => ({
-            name: b.name,
-            id:   b.id,
-            players: b.values?.slice(0,5).map(v => v.value) || []
-          }))
-        };
-      })
-    );
-    res.json({ fixtureId: id, bookmakers: results });
-  } catch(err) { res.status(500).json({ error: err.message }); }
+        res.json({ fixtureId: id, bookmakers: results });
+    } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get("/api/debug", async(req,res)=>{
