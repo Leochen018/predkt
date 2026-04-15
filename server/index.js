@@ -56,13 +56,60 @@ async function requireAdmin(req, res, next) {
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
 const TOP_LEAGUES = [
-  { id: 39,  name: "Premier League"   },
-  { id: 40,  name: "Championship"     },
-  { id: 2,   name: "Champions League" },
-  { id: 3,   name: "Europa League"    },
-  { id: 140, name: "La Liga"          },
-  { id: 135, name: "Serie A"          },
-  { id: 78,  name: "Bundesliga"       },
+  // ── ENGLAND ───────────────────────────────────────────────────────────────
+  { id: 39,  name: "Premier League"      },
+  { id: 40,  name: "Championship"        },
+  { id: 41,  name: "League One"          },
+  { id: 45,  name: "FA Cup"              },
+  { id: 48,  name: "EFL Cup"             },
+
+  // ── EUROPE ────────────────────────────────────────────────────────────────
+  { id: 2,   name: "Champions League"    },
+  { id: 3,   name: "Europa League"       },
+  { id: 848, name: "Conference League"   },
+
+  // ── SPAIN ─────────────────────────────────────────────────────────────────
+  { id: 140, name: "La Liga"             },
+  { id: 141, name: "La Liga 2"           },
+  { id: 143, name: "Copa del Rey"        },
+
+  // ── ITALY ─────────────────────────────────────────────────────────────────
+  { id: 135, name: "Serie A"             },
+  { id: 136, name: "Serie B"             },
+  { id: 137, name: "Coppa Italia"        },
+
+  // ── GERMANY ───────────────────────────────────────────────────────────────
+  { id: 78,  name: "Bundesliga"          },
+  { id: 79,  name: "Bundesliga 2"        },
+  { id: 81,  name: "DFB Pokal"           },
+
+  // ── FRANCE ────────────────────────────────────────────────────────────────
+  { id: 61,  name: "Ligue 1"             },
+  { id: 62,  name: "Ligue 2"             },
+  { id: 66,  name: "Coupe de France"     },
+
+  // ── PORTUGAL ──────────────────────────────────────────────────────────────
+  { id: 94,  name: "Primeira Liga"       },
+  { id: 95,  name: "Segunda Liga"        },
+
+  // ── NETHERLANDS ───────────────────────────────────────────────────────────
+  { id: 88,  name: "Eredivisie"          },
+  { id: 89,  name: "Eerste Divisie"      },
+
+  // ── TURKEY ────────────────────────────────────────────────────────────────
+  { id: 203, name: "Super Lig"           },
+
+  // ── SCOTLAND ──────────────────────────────────────────────────────────────
+  { id: 179, name: "Scottish Premiership"},
+
+  // ── BELGIUM ───────────────────────────────────────────────────────────────
+  { id: 144, name: "Pro League"          },
+
+  // ── INTERNATIONAL ─────────────────────────────────────────────────────────
+  { id: 1,   name: "World Cup"           },
+  { id: 4,   name: "Euro Championship"   },
+  { id: 9,   name: "Nations League"      },
+  { id: 10,  name: "Friendlies"          },
 ];
 const LEAGUE_IDS      = TOP_LEAGUES.map(l => l.id);
 const LIVE_STATUSES   = ["1H","HT","2H","ET","BT","P","LIVE","INT"];
@@ -141,7 +188,23 @@ function parseBets(bets) {
       .sort((a, b) => a.odd - b.odd)
       .slice(0, n);
   };
-
+  // Fuzzy name search — bookmakers use different names for the same market
+const pListAny = (keywords, n = 8) => {
+    for (const kw of keywords) {
+        const b = bets.find(b => b.name?.toLowerCase().includes(kw.toLowerCase()));
+        if (b?.values?.length > 0) {
+            return b.values
+                .map(v => ({
+                    name: (v.value || "").replace(/^(Home|Away):\s*/i, "").trim(),
+                    odd: parseFloat(v.odd) || 0
+                }))
+                .filter(v => v.odd > 1 && v.name.length > 1)
+                .sort((a, b) => a.odd - b.odd)
+                .slice(0, n);
+        }
+    }
+    return [];
+};
   return {
     homeWin:val(1,"Home","Match Winner"), draw:val(1,"Draw","Match Winner"), awayWin:val(1,"Away","Match Winner"),
     homeWinNoDraw:val(2,"Home","Home/Away"), awayWinNoDraw:val(2,"Away","Home/Away"),
@@ -193,15 +256,15 @@ function parseBets(bets) {
     shotsOver105:val(25,"Over 10.5","Total Shots"), shotsUnder105:val(25,"Under 10.5","Total Shots"),
     shotsOver125:val(25,"Over 12.5","Total Shots"), shotsUnder125:val(25,"Under 12.5","Total Shots"),
     // ✅ Player props — now using merged multi-bookmaker bets for full player lists
-    playerFirstGoal:    pList(26, "First Goalscorer"),
-    playerLastGoal:     pList(27, "Last Goalscorer"),
-    playerAnytime:      pList(28, "Anytime Goalscorer"),
-    playerToBeCarded:   pList(29, "Player To Be Carded"),
-    playerToAssist:     pList(30, "Player To Assist"),
-    playerShotsOnTarget:pList(31, "Player Shots on Target", 10),
-    playerToBeFouled:   pList(32, "Player To Be Fouled"),
-    playerToBeScored2:  pList(28, "Player To Score 2+ Goals", 8),
-    playerHatTrick:     pList(28, "Player To Score Hat-trick", 8),
+    playerFirstGoal:     pList(null, "First Goalscorer"),
+    playerLastGoal:      pList(null, "Last Goalscorer"),
+    playerAnytime:       pList(null, "Anytime Goalscorer"),
+    playerToBeCarded:    pList(null, "Player To Be Carded"),
+    playerToAssist:      pList(null, "Player To Assist"),
+    playerShotsOnTarget: pList(null, "Player Shots on Target", 10),
+    playerToBeFouled:    pList(null, "Player To Be Fouled"),
+    playerToBeScored2:   pListAny(["2 or more goals", "brace scorer", "score 2+", "to score 2"], 8),
+    playerHatTrick:      pListAny(["hat-trick", "hat trick", "3 or more goals", "score 3+", "to score 3"], 8),  
     homeScoreBothHalves:val(33,"Home","Score in Both Halves"),
     awayScoreBothHalves:val(33,"Away","Score in Both Halves"),
     cardsOver15:val(null,"Over 1.5","Total Bookings"),   cardsUnder15:val(null,"Under 1.5","Total Bookings"),
@@ -299,6 +362,47 @@ async function fetchOddsForId(fixtureId) {
   }
 }
 
+// ── GOAL EVENTS ───────────────────────────────────────────────────────────────
+async function fetchGoalEvents(fixtureId) {
+    try {
+        const events = await apiFetch("/fixtures/events", { fixture: fixtureId });
+        const counts = {};       // { "Erling Haaland": 2 }
+        const scorerOrder = [];  // first → last goal scorer (name, in order)
+
+        for (const e of events) {
+            if (e.type !== "Goal" || e.detail === "Own Goal" || e.detail === "Penalty Missed") continue;
+            const name = e.player?.name;
+            if (!name) continue;
+            counts[name] = (counts[name] || 0) + 1;
+            scorerOrder.push(name);
+        }
+
+        return {
+            counts,
+            firstScorer: scorerOrder[0]  ?? null,
+            lastScorer:  scorerOrder[scorerOrder.length - 1] ?? null,
+        };
+    } catch (err) {
+        console.warn(`⚠️ fetchGoalEvents ${fixtureId}:`, err.message);
+        return { counts: {}, firstScorer: null, lastScorer: null };
+    }
+}
+
+// Fuzzy match "Haaland" or "Erling Haaland" against event names
+function fuzzyMatch(pickName, eventNames) {
+    const clean = pickName.toLowerCase()
+        .replace(/\s*\(.*?\)\s*/g, "")  // strip "(anytime)", "(2+ goals)" etc
+        .trim();
+    for (const n of eventNames) {
+        const en = n.toLowerCase();
+        if (en === clean) return n;
+        if (en.includes(clean) || clean.includes(en)) return n;
+        const last = clean.split(" ").pop();
+        if (last.length > 3 && en.includes(last)) return n;
+    }
+    return null;
+}
+
 function mapFixture(f, odds=null) {
   return {
     fixtureId:   f.fixture.id,
@@ -334,11 +438,11 @@ async function buildMatchList() {
     LEAGUE_IDS.map(id => fetchLeagueFixtures(id))
   );
 
-  const liveFixtures = await apiFetch("/fixtures", { live: "all" });
-  console.log(`🔴 Live: ${liveFixtures.length}`);
+ console.log(`🔴 Skipping global live fetch — only showing TOP_LEAGUES`);
 
-  const seen   = new Set();
-  const unique = [...liveFixtures, ...leagueResults.flat()].filter(f => {
+const seen   = new Set();
+const unique = [...leagueResults.flat()].filter(f => {
+
     if (seen.has(f.fixture.id)) return false;
     seen.add(f.fixture.id); return true;
   });
@@ -469,36 +573,156 @@ async function resolveCombo(comboId) {
   console.log(`🎯 Combo ${comboId}: ${correct}/${total} | ×${comboMultiplier} | rate ${Math.round(rate*100)}% | +${totalBonus} XP`);
 }
 
+
+async function resolvePlayerGoalPicks(fixtureId, pendingPicks, profileCache) {
+    if (!pendingPicks.length) return 0;
+
+    const { counts, firstScorer, lastScorer } = await fetchGoalEvents(fixtureId);
+    const playerNames = Object.keys(counts);
+    let resolved = 0;
+
+    for (const pick of pendingPicks) {
+        const market  = pick.market || "";
+        const mLower  = market.toLowerCase();
+        let result    = null;
+
+        // Detect market type from the suffix we embed in PredictViewModel
+        if (mLower.includes("(2+ goals)")) {
+            const matched = fuzzyMatch(market, playerNames);
+            const scored  = matched ? (counts[matched] ?? 0) : 0;
+            result = scored >= 2 ? "correct" : "wrong";
+
+        } else if (mLower.includes("(hat-trick)")) {
+            const matched = fuzzyMatch(market, playerNames);
+            const scored  = matched ? (counts[matched] ?? 0) : 0;
+            result = scored >= 3 ? "correct" : "wrong";
+
+        } else if (mLower.includes("(anytime)")) {
+            const matched = fuzzyMatch(market, playerNames);
+            result = matched ? "correct" : "wrong";
+
+        } else if (mLower.includes("(1st goal)")) {
+            const matched = fuzzyMatch(market, firstScorer ? [firstScorer] : []);
+            result = matched ? "correct" : "wrong";
+
+        } else if (mLower.includes("(last goal)")) {
+            const matched = fuzzyMatch(market, lastScorer ? [lastScorer] : []);
+            result = matched ? "correct" : "wrong";
+
+        } else {
+            continue; // not a player goal pick we can resolve
+        }
+
+        const prob    = pick.probability || Math.min(99, Math.max(1, Math.round(100.0 / (pick.odds || 2.0))));
+        let profile   = profileCache[pick.user_id];
+        if (!profile) {
+            const { data } = await supabaseAdmin.from("profiles").select("*").eq("id", pick.user_id).single();
+            profile = data;
+            profileCache[pick.user_id] = profile;
+        }
+        if (!profile) continue;
+
+        let fp = 0, ns = 0;
+        if (result === "correct") {
+            ns = (profile.current_streak || 0) + 1;
+            fp = Math.round(calcPointsWin(prob) * getStreakMultiplier(ns) * getDailyBonus(profile.daily_streak));
+        } else {
+            fp = -calcPointsLoss(prob);
+        }
+
+        const du = updateDailyStreak(profile);
+        await supabaseAdmin.from("picks").update({ result, points_earned: fp }).eq("id", pick.id);
+        await supabaseAdmin.from("profiles").update({
+            current_streak:    result === "correct" ? ns : 0,
+            best_streak:       Math.max(profile.best_streak || 0, ns),
+            total_points:      (profile.total_points  || 0) + fp,
+            weekly_points:     (profile.weekly_points || 0) + fp,
+            daily_streak:      du.daily_streak,
+            best_daily_streak: du.best_daily_streak,
+            last_pick_date:    du.last_pick_date,
+        }).eq("id", pick.user_id);
+
+        // Update cache so next leg of the same combo uses fresh profile data
+        profileCache[pick.user_id] = {
+            ...profile,
+            current_streak: result === "correct" ? ns : 0,
+            total_points:   (profile.total_points  || 0) + fp,
+            weekly_points:  (profile.weekly_points || 0) + fp,
+        };
+
+        resolved++;
+    }
+    return resolved;
+}
+
+
 async function resolvePicksForMatch(fixture) {
-  const{data:picks}=await supabaseAdmin.from("picks").select("*").eq("result","pending").ilike("match",`%${fixture.teams.home.name}%`);
-  if(!picks?.length) return 0;
-  let resolved=0;
-  const comboIdsToCheck = new Set();
+    const { data: picks } = await supabaseAdmin
+        .from("picks").select("*").eq("result", "pending")
+        .ilike("match", `%${fixture.teams.home.name}%`);
+    if (!picks?.length) return 0;
 
-  for(const pick of picks){
-    if(!pick.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase())) continue;
-    const result=evaluatePick(pick.market,fixture); if(!result) continue;
-    const prob=pick.probability||Math.min(99,Math.max(1,Math.round(100.0/(pick.odds||2.0))));
-    const{data:profile}=await supabaseAdmin.from("profiles").select("*").eq("id",pick.user_id).single();
-    if(!profile) continue;
-    let ns=0,fp=0;
-    if(result==="correct"){ns=(profile.current_streak||0)+1;fp=Math.round(calcPointsWin(prob)*getStreakMultiplier(ns)*getDailyBonus(profile.daily_streak));}
-    else{fp=-calcPointsLoss(prob);}
-    const du=updateDailyStreak(profile);
-    await supabaseAdmin.from("picks").update({result,points_earned:fp}).eq("id",pick.id);
-    await supabaseAdmin.from("profiles").update({current_streak:result==="correct"?ns:0,best_streak:Math.max(profile.best_streak||0,ns),total_points:(profile.total_points||0)+fp,weekly_points:(profile.weekly_points||0)+fp,daily_streak:du.daily_streak,best_daily_streak:du.best_daily_streak,last_pick_date:du.last_pick_date}).eq("id",pick.user_id);
-    resolved++;
+    let resolved = 0;
+    const comboIdsToCheck = new Set();
+    const profileCache    = {};   // avoid re-fetching same profile multiple times
 
-    // Track combo IDs so we can check for partial credit after
-    if (pick.combo_id) comboIdsToCheck.add(pick.combo_id);
-  }
+    // ── Pass 1: standard market resolution ───────────────────────────────────
+    for (const pick of picks) {
+        if (!pick.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase())) continue;
+        const result = evaluatePick(pick.market, fixture);
+        if (!result) continue;
 
-  // After resolving all picks in this match, check each combo for partial credit
-  for (const comboId of comboIdsToCheck) {
-    await resolveCombo(comboId);
-  }
+        const prob = pick.probability || Math.min(99, Math.max(1, Math.round(100.0 / (pick.odds || 2.0))));
+        const { data: profile } = await supabaseAdmin.from("profiles").select("*").eq("id", pick.user_id).single();
+        if (!profile) continue;
 
-  return resolved;
+        profileCache[pick.user_id] = profile;
+        let ns = 0, fp = 0;
+        if (result === "correct") {
+            ns = (profile.current_streak || 0) + 1;
+            fp = Math.round(calcPointsWin(prob) * getStreakMultiplier(ns) * getDailyBonus(profile.daily_streak));
+        } else {
+            fp = -calcPointsLoss(prob);
+        }
+        const du = updateDailyStreak(profile);
+        await supabaseAdmin.from("picks").update({ result, points_earned: fp }).eq("id", pick.id);
+        await supabaseAdmin.from("profiles").update({
+            current_streak:    result === "correct" ? ns : 0,
+            best_streak:       Math.max(profile.best_streak || 0, ns),
+            total_points:      (profile.total_points  || 0) + fp,
+            weekly_points:     (profile.weekly_points || 0) + fp,
+            daily_streak:      du.daily_streak,
+            best_daily_streak: du.best_daily_streak,
+            last_pick_date:    du.last_pick_date,
+        }).eq("id", pick.user_id);
+        resolved++;
+        if (pick.combo_id) comboIdsToCheck.add(pick.combo_id);
+    }
+
+    // ── Pass 2: player goalscorer resolution (needs events endpoint) ──────────
+    const { data: stillPending } = await supabaseAdmin
+        .from("picks").select("*").eq("result", "pending")
+        .ilike("match", `%${fixture.teams.home.name}%`);
+
+    const playerPicks = (stillPending || []).filter(p =>
+        p.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase()) &&
+        /\((anytime|1st goal|last goal|2\+ goals|hat-trick)\)/i.test(p.market)
+    );
+
+    if (playerPicks.length > 0) {
+        const playerResolved = await resolvePlayerGoalPicks(
+            fixture.fixture.id, playerPicks, profileCache
+        );
+        resolved += playerResolved;
+        playerPicks.forEach(p => { if (p.combo_id) comboIdsToCheck.add(p.combo_id); });
+    }
+
+    // ── Pass 3: combo partial credit ─────────────────────────────────────────
+    for (const comboId of comboIdsToCheck) {
+        await resolveCombo(comboId);
+    }
+
+    return resolved;
 }
 // ── ROUTES ────────────────────────────────────────────────────────────────────
 app.get("/", (req,res) => res.send("Predkt API 🚀"));
@@ -543,16 +767,26 @@ app.get("/api/debug", async(req,res)=>{
       fetch(`${API_BASE}/status`,{headers}).then(r=>r.json()),
     ]);
     res.json({
-      season,
-      plan:       status.response?.subscription?.plan??"?",
-      requests:   `${status.response?.requests?.current??0}/${status.response?.requests?.limit_day??0}`,
-      plFixtures: test.response?.length??0,
-      errors:     test.errors??null,
-      cacheSize:  matchCache.data?.length??0,
-      cacheStale: matchCache.isStale(),
-      cachedDays: matchCache.data ? [...new Set(matchCache.data.map(m=>m.date.slice(0,10)))].sort() : [],
-      leagues:    TOP_LEAGUES,
-    });
+    season,
+    plan:       status.response?.subscription?.plan ?? "?",
+    requests:   `${status.response?.requests?.current ?? 0}/${status.response?.requests?.limit_day ?? 0}`,
+    plFixtures: test.response?.length ?? 0,
+    errors:     test.errors ?? null,
+    cacheSize:  matchCache.data?.length ?? 0,
+    cacheStale: matchCache.isStale(),
+    cachedDays: matchCache.data ? [...new Set(matchCache.data.map(m => m.date.slice(0,10)))].sort() : [],
+    // ✅ Show upcoming fixture IDs for odds-debug testing
+    upcomingFixtures: (matchCache.data || [])
+        .filter(m => !m.isLive && !m.isFinished)
+        .slice(0, 10)
+        .map(m => ({
+            id:          m.fixtureId,
+            match:       `${m.home} vs ${m.away}`,
+            competition: m.competition,
+            date:        m.date,
+        })),
+    leagues: TOP_LEAGUES,
+});
   }catch(err){res.json({error:err.message});}
 });
 
