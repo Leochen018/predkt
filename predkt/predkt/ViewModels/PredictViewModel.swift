@@ -816,7 +816,9 @@ final class PredictViewModel: ObservableObject {
 
         // Keep assist, carded, sot, fouled unchanged (using original players() helper)
         let assist = players(o?.playerToAssist, grp: "assist")
-        // ... rest unchanged
+        if !assist.isEmpty {
+            q.append(Question(category: "🅰️ PLAYER TO ASSIST", prompt: "Who creates a goal with an assist?", icon: "hand.point.right.fill", answers: assist))
+        }
         
         let carded = players(o?.playerToBeCarded, grp: "card")
         if !carded.isEmpty {

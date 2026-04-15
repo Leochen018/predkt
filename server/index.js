@@ -207,7 +207,7 @@ async function fetchOddsForId(fixtureId) {
     const allBets = Array.from(merged.values());
 
     if (allBets.length === 0) {
-      setCachedOdds(fixtureId, null);
+      //setCachedOdds(fixtureId, null);
       return null;
     }
 
@@ -344,7 +344,7 @@ const unique = [...leagueResults.flat()].filter(f => {
   for (let i=0; i<upcoming.length; i+=6) {
     const batch = await Promise.all(upcoming.slice(i,i+6).map(f=>fetchOddsForId(f.fixture.id)));
     oddsResults.push(...batch);
-    if (i+6<upcoming.length) await new Promise(r=>setTimeout(r,200));
+    if (i+6<upcoming.length) await new Promise(r=>setTimeout(r,2000)); // 2s between batches
   }
 
   const upcomingMap  = new Map(upcoming.map((f,i) => [f.fixture.id, oddsResults[i]]));

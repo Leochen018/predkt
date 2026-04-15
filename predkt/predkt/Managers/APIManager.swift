@@ -77,7 +77,7 @@ final class APIManager {
     private static let cacheTTL: TimeInterval = 55 * 60 // 55 min
 
     // nonisolated(unsafe) — these are read/written only in controlled async contexts
-    nonisolated(unsafe) private static var oddsMemCache: [String: MatchOdds?] = [:]
+    nonisolated(unsafe) private static var oddsMemCache: [String: MatchOdds] = [:]
 
     private struct CacheWrapper: Codable {
         let matches: [Match]
@@ -187,18 +187,22 @@ final class APIManager {
     static func fetchOdds(for match: Match) async -> MatchOdds? {
         let key = match.id
         if let cached = oddsMemCache[key] { return cached }
-        if match.isLive { return nil }
+        if match.isLive { print("⚠️ Skipping odds — match is live: \(match.displayName)"); return nil }
 
         guard let url = URL(string: "\(baseURL)/api/odds/\(match.id)") else { return nil }
         do {
             var request = URLRequest(url: url)
             request.timeoutInterval = 10
             let (data, _) = try await session.data(for: request)
-            let decoded   = try JSONDecoder().decode(OddsResponse.self, from: data)
-            oddsMemCache[key] = decoded.odds
+            if let raw = String(data: data, encoding: .utf8) {
+                print("🎯 Odds raw (\(match.id)): \(raw.prefix(300))")
+            }
+            let decoded = try JSONDecoder().decode(OddsResponse.self, from: data)
+            print("🎯 Decoded: \(decoded.odds == nil ? "NIL" : "has data")")
+            if let odds = decoded.odds { oddsMemCache[key] = odds }
             return decoded.odds
         } catch {
-            print("⚠️ Odds error for \(match.displayName): \(error)")
+            print("⚠️ Odds DECODE ERROR for \(match.displayName): \(error)")
             return nil
         }
     }
