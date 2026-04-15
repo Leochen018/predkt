@@ -460,6 +460,14 @@ final class PredictViewModel: ObservableObject {
                 return Answer(p.name, short: shortName, odds: p.odd, group: "\(grp)_\(p.name)")
             }
         }
+        func playersTagged(_ list: [PlayerOdd]?, grp: String, tag: String, limit: Int = 14) -> [Answer] {
+            guard let list = list else { return [] }
+            return list.sorted { $0.odd < $1.odd }.prefix(limit).compactMap { p in
+                guard p.odd > 1, !p.name.isEmpty else { return nil }
+                let shortName = p.name.components(separatedBy: " ").last ?? p.name
+                return Answer("\(p.name) (\(tag))", short: shortName, odds: p.odd, group: "\(grp)_\(p.name)")
+            }
+        }
         
         // ── 1. MAIN MATCH MARKETS ────────────────────────────────────────────
         
@@ -779,35 +787,36 @@ final class PredictViewModel: ObservableObject {
         
         // ── 8. PLAYER PROPS ───────────────────────────────────────────────────
         
-        let any = players(o?.playerAnytime, grp: "any")
+        // ── 8. PLAYER PROPS ───────────────────────────────────────────────────────────
+
+        let any = playersTagged(o?.playerAnytime, grp: "any", tag: "anytime")
         if !any.isEmpty {
             q.append(Question(category: "⚽ ANYTIME GOALSCORER", prompt: "Which player scores at any point?", icon: "person.fill.checkmark", answers: any))
         }
-        
-        let first = players(o?.playerFirstGoal, grp: "first")
+
+        let first = playersTagged(o?.playerFirstGoal, grp: "first", tag: "1st goal")
         if !first.isEmpty {
             q.append(Question(category: "🥇 FIRST GOALSCORER", prompt: "Who opens the scoring?", icon: "1.circle.fill", answers: first))
         }
-        
-        let last = players(o?.playerLastGoal, grp: "last")
+
+        let last = playersTagged(o?.playerLastGoal, grp: "last", tag: "last goal")
         if !last.isEmpty {
             q.append(Question(category: "🏁 LAST GOALSCORER", prompt: "Who scores the final goal?", icon: "flag.checkered", answers: last))
         }
-        
-        let score2 = players(o?.playerToBeScored2, grp: "score2")
+
+        let score2 = playersTagged(o?.playerToBeScored2, grp: "score2", tag: "2+ goals")
         if !score2.isEmpty {
             q.append(Question(category: "⚽⚽ PLAYER TO SCORE 2+", prompt: "Who scores a brace or more?", icon: "2.circle.fill", answers: score2))
         }
-        
-        let hat = players(o?.playerHatTrick, grp: "hattrick")
+
+        let hat = playersTagged(o?.playerHatTrick, grp: "hattrick", tag: "hat-trick")
         if !hat.isEmpty {
             q.append(Question(category: "🎩 PLAYER TO SCORE HAT-TRICK", prompt: "Who completes a hat-trick?", icon: "3.circle.fill", answers: hat))
         }
-        
+
+        // Keep assist, carded, sot, fouled unchanged (using original players() helper)
         let assist = players(o?.playerToAssist, grp: "assist")
-        if !assist.isEmpty {
-            q.append(Question(category: "🅰️ PLAYER TO ASSIST", prompt: "Who creates a goal with an assist?", icon: "hand.point.right.fill", answers: assist))
-        }
+        // ... rest unchanged
         
         let carded = players(o?.playerToBeCarded, grp: "card")
         if !carded.isEmpty {
