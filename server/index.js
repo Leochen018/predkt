@@ -434,9 +434,16 @@ async function buildMatchList() {
   const season = currentSeason();
   console.log(`🔄 Building for season=${season}...`);
 
-  const leagueResults = await Promise.all(
-    LEAGUE_IDS.map(id => fetchLeagueFixtures(id))
-  );
+  const leagueResults = [];
+for (let i = 0; i < LEAGUE_IDS.length; i += 4) {
+    const batch = await Promise.all(
+        LEAGUE_IDS.slice(i, i + 4).map(id => fetchLeagueFixtures(id))
+    );
+    leagueResults.push(...batch);
+    if (i + 4 < LEAGUE_IDS.length) {
+        await new Promise(r => setTimeout(r, 3000)); // 3s between batches
+    }
+}
 
  console.log(`🔴 Skipping global live fetch — only showing TOP_LEAGUES`);
 
