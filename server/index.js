@@ -159,7 +159,7 @@ function parseBets(bets) {
   const bet    = (id, fb) => (id ? byId(id) : null) || (fb ? byName(fb) : null);
   const val    = (id, v, fb) => { const b=bet(id,fb); return parseFloat(b?.values?.find(x=>x.value===v)?.odd)||null; };
 
-  const sList = (id, fb, mx=20, n=10) => {
+  const sList  = (id, fb, mx=20, n=10) => {
     const b=bet(id,fb);
     if(!b) return [];
     return b.values
@@ -169,136 +169,119 @@ function parseBets(bets) {
       .slice(0,n);
   };
 
+  // ✅ pList: reads player name from v.value and cleans it up
+  // API-Football returns player names directly in the value field
+  // e.g. { value: "Erling Haaland", odd: "3.50" }
   const pList = (id, fb, n=14) => {
     const b = bet(id, fb);
     if (!b) return [];
     return b.values
       .map(v => {
-        const name = (v.value || "").replace(/^(Home|Away):\s*/i, "").trim();
+        // Clean the name — strip any "Home: " or "Away: " prefixes some bookmakers add
+        const rawName = v.value || "";
+        const name = rawName
+          .replace(/^(Home|Away):\s*/i, "")
+          .trim();
         return { name, odd: parseFloat(v.odd) || 0 };
       })
       .filter(v => v.odd > 1 && v.name.length > 1)
       .sort((a, b) => a.odd - b.odd)
       .slice(0, n);
   };
-
-  // Fuzzy name search for markets with inconsistent naming across bookmakers
-  const pListAny = (keywords, n = 8) => {
+  // Fuzzy name search — bookmakers use different names for the same market
+const pListAny = (keywords, n = 8) => {
     for (const kw of keywords) {
-      const b = bets.find(b => b.name?.toLowerCase().includes(kw.toLowerCase()));
-      if (b?.values?.length > 0) {
-        return b.values
-          .map(v => ({
-            name: (v.value || "").replace(/^(Home|Away):\s*/i, "").trim(),
-            odd: parseFloat(v.odd) || 0
-          }))
-          .filter(v => v.odd > 1 && v.name.length > 1)
-          .sort((a, b) => a.odd - b.odd)
-          .slice(0, n);
-      }
+        const b = bets.find(b => b.name?.toLowerCase().includes(kw.toLowerCase()));
+        if (b?.values?.length > 0) {
+            return b.values
+                .map(v => ({
+                    name: (v.value || "").replace(/^(Home|Away):\s*/i, "").trim(),
+                    odd: parseFloat(v.odd) || 0
+                }))
+                .filter(v => v.odd > 1 && v.name.length > 1)
+                .sort((a, b) => a.odd - b.odd)
+                .slice(0, n);
+        }
     }
     return [];
-  };
-
-  // Merges home + away player lists into one combined list (bookmaker 8 splits by team)
-  const mergePlayerLists = (ids, n = 14) => {
-    const seen = new Set();
-    const all  = [];
-    for (const id of ids) {
-      const b = byId(id);
-      if (!b) continue;
-      for (const v of b.values || []) {
-        const name = (v.value || "").replace(/^(Home|Away):\s*/i, "").trim();
-        const odd  = parseFloat(v.odd) || 0;
-        if (name && odd > 1 && !seen.has(name)) {
-          seen.add(name);
-          all.push({ name, odd });
-        }
-      }
-    }
-    return all.sort((a, b) => a.odd - b.odd).slice(0, n);
-  };
-
+};
   return {
     homeWin:val(1,"Home","Match Winner"), draw:val(1,"Draw","Match Winner"), awayWin:val(1,"Away","Match Winner"),
     homeWinNoDraw:val(2,"Home","Home/Away"), awayWinNoDraw:val(2,"Away","Home/Away"),
-    bttsYes:val(8,"Yes","Both Teams Score"), bttsNo:val(8,"No","Both Teams Score"),
-    over05:val(5,"Over 0.5","Goals Over/Under"),  under05:val(5,"Under 0.5","Goals Over/Under"),
-    over15:val(5,"Over 1.5","Goals Over/Under"),  under15:val(5,"Under 1.5","Goals Over/Under"),
-    over25:val(5,"Over 2.5","Goals Over/Under"),  under25:val(5,"Under 2.5","Goals Over/Under"),
-    over35:val(5,"Over 3.5","Goals Over/Under"),  under35:val(5,"Under 3.5","Goals Over/Under"),
-    over45:val(5,"Over 4.5","Goals Over/Under"),  under45:val(5,"Under 4.5","Goals Over/Under"),
-    goalsOdd:val(21,"Odd","Goals Odd/Even"), goalsEven:val(21,"Even","Goals Odd/Even"),
-    homeOver05:val(16,"Over 0.5","Total - Home"), homeUnder05:val(16,"Under 0.5","Total - Home"),
-    homeOver15:val(16,"Over 1.5","Total - Home"), homeUnder15:val(16,"Under 1.5","Total - Home"),
-    homeOver25:val(16,"Over 2.5","Total - Home"), homeUnder25:val(16,"Under 2.5","Total - Home"),
-    awayOver05:val(17,"Over 0.5","Total - Away"), awayUnder05:val(17,"Under 0.5","Total - Away"),
-    awayOver15:val(17,"Over 1.5","Total - Away"), awayUnder15:val(17,"Under 1.5","Total - Away"),
-    awayOver25:val(17,"Over 2.5","Total - Away"), awayUnder25:val(17,"Under 2.5","Total - Away"),
-    bttsFirstHalf:val(34,"Yes","Both Teams Score - First Half"),
-    bttsSecondHalf:val(35,"Yes","Both Teams To Score - Second Half"),
-    htHomeWin:val(13,"Home","First Half Winner"), htDraw:val(13,"Draw","First Half Winner"), htAwayWin:val(13,"Away","First Half Winner"),
-    shHomeWin:val(3,"Home","Second Half Winner"), shDraw:val(3,"Draw","Second Half Winner"), shAwayWin:val(3,"Away","Second Half Winner"),
+    bttsYes:val(3,"Yes","Both Teams Score"), bttsNo:val(3,"No","Both Teams Score"),
+    over05:val(4,"Over 0.5","Goals Over/Under"),  under05:val(4,"Under 0.5","Goals Over/Under"),
+    over15:val(4,"Over 1.5","Goals Over/Under"),  under15:val(4,"Under 1.5","Goals Over/Under"),
+    over25:val(4,"Over 2.5","Goals Over/Under"),  under25:val(4,"Under 2.5","Goals Over/Under"),
+    over35:val(4,"Over 3.5","Goals Over/Under"),  under35:val(4,"Under 3.5","Goals Over/Under"),
+    over45:val(4,"Over 4.5","Goals Over/Under"),  under45:val(4,"Under 4.5","Goals Over/Under"),
+    goalsOdd:val(5,"Odd","Goals Odd/Even"), goalsEven:val(5,"Even","Goals Odd/Even"),
+    homeOver05:val(6,"Over 0.5"), homeUnder05:val(6,"Under 0.5"),
+    homeOver15:val(6,"Over 1.5"), homeUnder15:val(6,"Under 1.5"),
+    homeOver25:val(6,"Over 2.5"), homeUnder25:val(6,"Under 2.5"),
+    awayOver05:val(7,"Over 0.5"), awayUnder05:val(7,"Under 0.5"),
+    awayOver15:val(7,"Over 1.5"), awayUnder15:val(7,"Under 1.5"),
+    awayOver25:val(7,"Over 2.5"), awayUnder25:val(7,"Under 2.5"),
+    bttsFirstHalf:val(8,"Yes","Both Teams To Score - First Half"),
+    bttsSecondHalf:val(9,"Yes","Both Teams To Score - Second Half"),
+    htHomeWin:val(10,"Home","First Half Winner"), htDraw:val(10,"Draw","First Half Winner"), htAwayWin:val(10,"Away","First Half Winner"),
+    shHomeWin:val(11,"Home","Second Half Winner"), shDraw:val(11,"Draw","Second Half Winner"), shAwayWin:val(11,"Away","Second Half Winner"),
     homeOrDraw:val(12,"Home/Draw","Double Chance"), awayOrDraw:val(12,"Draw/Away","Double Chance"), homeOrAway:val(12,"Home/Away","Double Chance"),
-    dnbHome:val(null,"Home","Draw No Bet"), dnbAway:val(null,"Away","Draw No Bet"),
-    firstTeamHome:val(14,"Home","Team To Score First"), firstTeamAway:val(14,"Away","Team To Score First"), firstTeamNone:val(14,"No Goal","Team To Score First"),
-    lastTeamHome:val(15,"Home","Team To Score Last"), lastTeamAway:val(15,"Away","Team To Score Last"),
-    correctScores:sList(10,"Exact Score"),
-    ahHome05:val(4,"Home -0.5","Asian Handicap"), ahAway05:val(4,"Away -0.5","Asian Handicap"),
-    ahHome15:val(4,"Home -1.5","Asian Handicap"), ahAway15:val(4,"Away -1.5","Asian Handicap"),
-    homeWinToNil:val(29,"Yes","Win to Nil - Home"), awayWinToNil:val(30,"Yes","Win to Nil - Away"),
-    bttsAndHomeWin:val(null,"Yes/Home","Results/Both Teams Score")||val(null,"Home/Yes","Results/Both Teams Score"),
-    bttsAndDraw:val(null,"Yes/Draw","Results/Both Teams Score")||val(null,"Draw/Yes","Results/Both Teams Score"),
-    bttsAndAwayWin:val(null,"Yes/Away","Results/Both Teams Score")||val(null,"Away/Yes","Results/Both Teams Score"),
-    exactGoals0:val(38,"0","Exact Goals Number"), exactGoals1:val(38,"1","Exact Goals Number"),
-    exactGoals2:val(38,"2","Exact Goals Number"), exactGoals3:val(38,"3","Exact Goals Number"),
-    exactGoals4:val(38,"4","Exact Goals Number"), exactGoals5plus:val(38,"5+","Exact Goals Number"),
-    homeCleanSheet:val(27,"Yes","Clean Sheet - Home"), awayCleanSheet:val(28,"Yes","Clean Sheet - Away"),
-    htftHomeHome:val(7,"Home/Home","HT/FT Double"), htftDrawHome:val(7,"Draw/Home","HT/FT Double"),
-    htftAwayHome:val(7,"Away/Home","HT/FT Double"), htftHomeDraw:val(7,"Home/Draw","HT/FT Double"),
-    htftDrawDraw:val(7,"Draw/Draw","HT/FT Double"), htftAwayDraw:val(7,"Away/Draw","HT/FT Double"),
-    htftHomeAway:val(7,"Home/Away","HT/FT Double"), htftDrawAway:val(7,"Draw/Away","HT/FT Double"),
-    htftAwayAway:val(7,"Away/Away","HT/FT Double"),
-    cornersOver75:val(45,"Over 7.5","Corners Over Under"),   cornersUnder75:val(45,"Under 7.5","Corners Over Under"),
-    cornersOver85:val(45,"Over 8.5","Corners Over Under"),   cornersUnder85:val(45,"Under 8.5","Corners Over Under"),
-    cornersOver95:val(45,"Over 9.5","Corners Over Under"),   cornersUnder95:val(45,"Under 9.5","Corners Over Under"),
-    cornersOver105:val(45,"Over 10.5","Corners Over Under"), cornersUnder105:val(45,"Under 10.5","Corners Over Under"),
-    htCornersOver35:val(77,"Over 3.5","Total Corners (1st Half)"),  htCornersUnder35:val(77,"Under 3.5","Total Corners (1st Half)"),
-    htCornersOver45:val(77,"Over 4.5","Total Corners (1st Half)"),  htCornersUnder45:val(77,"Under 4.5","Total Corners (1st Half)"),
-    bttsBothHalves:val(null,"Yes","Both Teams Score in Both Halves"),
-    shotsOver85:val(87,"Over 8.5","Total ShotOnGoal"),   shotsUnder85:val(87,"Under 8.5","Total ShotOnGoal"),
-    shotsOver105:val(87,"Over 10.5","Total ShotOnGoal"), shotsUnder105:val(87,"Under 10.5","Total ShotOnGoal"),
-    shotsOver125:val(87,"Over 12.5","Total ShotOnGoal"), shotsUnder125:val(87,"Under 12.5","Total ShotOnGoal"),
-    // ✅ Player props — correct IDs confirmed from debug (bookmaker 8)
-    // IDs 92+218+231 = Anytime scorer combined (both teams)
-    // IDs 93+219+232 = First goalscorer combined
-    // IDs 94+226+233 = Last goalscorer combined
-    playerAnytime:       mergePlayerLists([92, 218, 231]),
-    playerFirstGoal:     mergePlayerLists([93, 219, 232]),
-    playerLastGoal:      mergePlayerLists([94, 226, 233]),
-    playerToAssist:      pList(212, "Player Assists"),
-    playerShotsOnTarget: pList(242, "Player Shots On Target", 10),
-    playerToBeFouled:    pList(266, "Player Fouls Committed"),
+    dnbHome:val(13,"Home","Draw No Bet"), dnbAway:val(13,"Away","Draw No Bet"),
+    firstTeamHome:val(14,"Home","First Team to Score"), firstTeamAway:val(14,"Away","First Team to Score"), firstTeamNone:val(14,"No Goal","First Team to Score"),
+    lastTeamHome:val(15,"Home","Last Team to Score"), lastTeamAway:val(15,"Away","Last Team to Score"),
+    correctScores:sList(16,"Correct Score"),
+    ahHome05:val(17,"Home -0.5","Asian Handicap"), ahAway05:val(17,"Away -0.5","Asian Handicap"),
+    ahHome15:val(17,"Home -1.5","Asian Handicap"), ahAway15:val(17,"Away -1.5","Asian Handicap"),
+    homeWinToNil:val(18,"Home","Win to Nil"), awayWinToNil:val(18,"Away","Win to Nil"),
+    bttsAndHomeWin:val(19,"Yes/Home")||val(19,"Home/Yes"),
+    bttsAndDraw:val(19,"Yes/Draw")||val(19,"Draw/Yes"),
+    bttsAndAwayWin:val(19,"Yes/Away")||val(19,"Away/Yes"),
+    exactGoals0:val(20,"0","Exact Goals Number"), exactGoals1:val(20,"1","Exact Goals Number"),
+    exactGoals2:val(20,"2","Exact Goals Number"), exactGoals3:val(20,"3","Exact Goals Number"),
+    exactGoals4:val(20,"4","Exact Goals Number"), exactGoals5plus:val(20,"5+","Exact Goals Number"),
+    homeCleanSheet:val(21,"Home","Clean Sheet"), awayCleanSheet:val(21,"Away","Clean Sheet"),
+    htftHomeHome:val(22,"Home/Home","HT/FT"), htftDrawHome:val(22,"Draw/Home","HT/FT"),
+    htftAwayHome:val(22,"Away/Home","HT/FT"), htftHomeDraw:val(22,"Home/Draw","HT/FT"),
+    htftDrawDraw:val(22,"Draw/Draw","HT/FT"), htftAwayDraw:val(22,"Away/Draw","HT/FT"),
+    htftHomeAway:val(22,"Home/Away","HT/FT"), htftDrawAway:val(22,"Draw/Away","HT/FT"),
+    htftAwayAway:val(22,"Away/Away","HT/FT"),
+    cornersOver75:val(23,"Over 7.5","Total Corners"),   cornersUnder75:val(23,"Under 7.5","Total Corners"),
+    cornersOver85:val(23,"Over 8.5","Total Corners"),   cornersUnder85:val(23,"Under 8.5","Total Corners"),
+    cornersOver95:val(23,"Over 9.5","Total Corners"),   cornersUnder95:val(23,"Under 9.5","Total Corners"),
+    cornersOver105:val(23,"Over 10.5","Total Corners"), cornersUnder105:val(23,"Under 10.5","Total Corners"),
+    htCornersOver35:val(null,"Over 3.5","First Half Corners"),  htCornersUnder35:val(null,"Under 3.5","First Half Corners"),
+    htCornersOver45:val(null,"Over 4.5","First Half Corners"),  htCornersUnder45:val(null,"Under 4.5","First Half Corners"),
+    bttsBothHalves:val(24,"Yes","Both Teams Score in Both Halves"),
+    shotsOver85:val(25,"Over 8.5","Total Shots"),   shotsUnder85:val(25,"Under 8.5","Total Shots"),
+    shotsOver105:val(25,"Over 10.5","Total Shots"), shotsUnder105:val(25,"Under 10.5","Total Shots"),
+    shotsOver125:val(25,"Over 12.5","Total Shots"), shotsUnder125:val(25,"Under 12.5","Total Shots"),
+    // ✅ Player props — now using merged multi-bookmaker bets for full player lists
+    playerFirstGoal:     pList(null, "First Goalscorer"),
+    playerLastGoal:      pList(null, "Last Goalscorer"),
+    playerAnytime:       pList(null, "Anytime Goalscorer"),
     playerToBeCarded:    pList(null, "Player To Be Carded"),
+    playerToAssist:      pList(null, "Player To Assist"),
+    playerShotsOnTarget: pList(null, "Player Shots on Target", 10),
+    playerToBeFouled:    pList(null, "Player To Be Fouled"),
     playerToBeScored2:   pListAny(["2 or more goals", "brace scorer", "score 2+", "to score 2"], 8),
-    playerHatTrick:      pListAny(["hat-trick", "hat trick", "3 or more goals", "score 3+", "to score 3"], 8),
-    homeScoreBothHalves:val(null,"Home","To Score In Both Halves By Teams"),
-    awayScoreBothHalves:val(null,"Away","To Score In Both Halves By Teams"),
-    cardsOver15:val(80,"Over 1.5","Cards Over/Under"),   cardsUnder15:val(80,"Under 1.5","Cards Over/Under"),
-    cardsOver25:val(80,"Over 2.5","Cards Over/Under"),   cardsUnder25:val(80,"Under 2.5","Cards Over/Under"),
-    cardsOver35:val(80,"Over 3.5","Cards Over/Under"),   cardsUnder35:val(80,"Under 3.5","Cards Over/Under"),
-    cardsOver45:val(80,"Over 4.5","Cards Over/Under"),   cardsUnder45:val(80,"Under 4.5","Cards Over/Under"),
-    homeGoalsOdd:val(23,"Odd","Home Odd/Even"), homeGoalsEven:val(23,"Even","Home Odd/Even"),
-    awayGoalsOdd:val(60,"Odd","Away Odd/Even"), awayGoalsEven:val(60,"Even","Away Odd/Even"),
-    winMarginHome1:val(47,"Home by 1","Winning Margin"), winMarginHome2:val(47,"Home by 2","Winning Margin"),
-    winMarginHome3:val(47,"Home by 3+","Winning Margin")||val(47,"Home by 3","Winning Margin"),
-    winMarginAway1:val(47,"Away by 1","Winning Margin"), winMarginAway2:val(47,"Away by 2","Winning Margin"),
-    winMarginAway3:val(47,"Away by 3+","Winning Margin")||val(47,"Away by 3","Winning Margin"),
-    winMarginDraw:val(47,"Draw","Winning Margin"),
-    correctScoresHT:sList(31,"Correct Score - First Half",25,8),
+    playerHatTrick:      pListAny(["hat-trick", "hat trick", "3 or more goals", "score 3+", "to score 3"], 8),  
+    homeScoreBothHalves:val(33,"Home","Score in Both Halves"),
+    awayScoreBothHalves:val(33,"Away","Score in Both Halves"),
+    cardsOver15:val(null,"Over 1.5","Total Bookings"),   cardsUnder15:val(null,"Under 1.5","Total Bookings"),
+    cardsOver25:val(null,"Over 2.5","Total Bookings"),   cardsUnder25:val(null,"Under 2.5","Total Bookings"),
+    cardsOver35:val(null,"Over 3.5","Total Bookings"),   cardsUnder35:val(null,"Under 3.5","Total Bookings"),
+    cardsOver45:val(null,"Over 4.5","Total Bookings"),   cardsUnder45:val(null,"Under 4.5","Total Bookings"),
+    homeGoalsOdd:val(34,"Odd"), homeGoalsEven:val(34,"Even"),
+    awayGoalsOdd:val(35,"Odd"), awayGoalsEven:val(35,"Even"),
+    winMarginHome1:val(37,"Home by 1"), winMarginHome2:val(37,"Home by 2"),
+    winMarginHome3:val(37,"Home by 3+")||val(37,"Home by 3"),
+    winMarginAway1:val(37,"Away by 1"), winMarginAway2:val(37,"Away by 2"),
+    winMarginAway3:val(37,"Away by 3+")||val(37,"Away by 3"),
+    winMarginDraw:val(37,"Draw"),
+    correctScoresHT:sList(45,"Correct Score - First Half",25,8),
     correctScoresSH:sList(62,"Correct Score - Second Half",25,8),
-    htOver05:val(6,"Over 0.5","Goals Over/Under First Half"), htUnder05:val(6,"Under 0.5","Goals Over/Under First Half"),
-    htOver15:val(6,"Over 1.5","Goals Over/Under First Half"), htUnder15:val(6,"Under 1.5","Goals Over/Under First Half"),
+    htOver05:val(null,"Over 0.5","First Half Goals"), htUnder05:val(null,"Under 0.5","First Half Goals"),
+    htOver15:val(null,"Over 1.5","First Half Goals"), htUnder15:val(null,"Under 1.5","First Half Goals"),
   };
 }
 
@@ -745,39 +728,154 @@ async function resolvePicksForMatch(fixture) {
 app.get("/", (req,res) => res.send("Predkt API 🚀"));
 
 // ✅ Debug route — check odds for any fixture, see raw player prop data
-app.get("/api/odds-debug/:fixtureId", async(req,res)=>{
-    const id = parseInt(req.params.fixtureId);
-    if (!id) return res.status(400).json({ error: "Invalid ID" });
-    const headers = { "x-apisports-key": process.env.API_FOOTBALL_KEY };
-    const bookmakerIds = [2, 4, 7, 8, 1, 6];
-    try {
-        const results = await Promise.all(
-            bookmakerIds.map(async bm => {
-                const data = await fetch(`${API_BASE}/odds?fixture=${id}&bookmaker=${bm}`, {
-                    headers, signal: AbortSignal.timeout(8000)
-                }).then(r => r.json());
-                const bets = data.response?.[0]?.bookmakers?.[0]?.bets || [];
+function parseBets(bets) {
+  const byId   = (id)   => bets.find(b => b.id === id);
+  const byName = (name) => bets.find(b => b.name === name);
+  const bet    = (id, fb) => (id ? byId(id) : null) || (fb ? byName(fb) : null);
+  const val    = (id, v, fb) => { const b=bet(id,fb); return parseFloat(b?.values?.find(x=>x.value===v)?.odd)||null; };
 
-                // Find actual goalscorer markets by name
-                const goalscorer = bets.filter(b =>
-                    b.name?.toLowerCase().match(/goalscorer|to score|scorer|hat.?trick|brace/)
-                );
+  const sList = (id, fb, mx=20, n=10) => {
+    const b=bet(id,fb);
+    if(!b) return [];
+    return b.values
+      .map(v=>({score:v.value, odd:parseFloat(v.odd)||0}))
+      .filter(v=>v.odd>0 && v.odd<mx)
+      .sort((a,b)=>a.odd-b.odd)
+      .slice(0,n);
+  };
 
-                return {
-                    bookmaker:       bm,
-                    totalMarkets:    bets.length,
-                    allMarketNames:  bets.map(b => `[${b.id}] ${b.name}`),
-                    goalscorerMarkets: goalscorer.map(b => ({
-                        id:      b.id,
-                        name:    b.name,
-                        players: b.values?.slice(0, 8).map(v => v.value) || []
-                    }))
-                };
-            })
-        );
-        res.json({ fixtureId: id, bookmakers: results });
-    } catch(err) { res.status(500).json({ error: err.message }); }
-});
+  const pList = (id, fb, n=14) => {
+    const b = bet(id, fb);
+    if (!b) return [];
+    return b.values
+      .map(v => {
+        const name = (v.value || "").replace(/^(Home|Away):\s*/i, "").trim();
+        return { name, odd: parseFloat(v.odd) || 0 };
+      })
+      .filter(v => v.odd > 1 && v.name.length > 1)
+      .sort((a, b) => a.odd - b.odd)
+      .slice(0, n);
+  };
+
+  // Fuzzy name search for markets with inconsistent naming across bookmakers
+  const pListAny = (keywords, n = 8) => {
+    for (const kw of keywords) {
+      const b = bets.find(b => b.name?.toLowerCase().includes(kw.toLowerCase()));
+      if (b?.values?.length > 0) {
+        return b.values
+          .map(v => ({
+            name: (v.value || "").replace(/^(Home|Away):\s*/i, "").trim(),
+            odd: parseFloat(v.odd) || 0
+          }))
+          .filter(v => v.odd > 1 && v.name.length > 1)
+          .sort((a, b) => a.odd - b.odd)
+          .slice(0, n);
+      }
+    }
+    return [];
+  };
+
+  // Merges home + away player lists into one combined list (bookmaker 8 splits by team)
+  const mergePlayerLists = (ids, n = 14) => {
+    const seen = new Set();
+    const all  = [];
+    for (const id of ids) {
+      const b = byId(id);
+      if (!b) continue;
+      for (const v of b.values || []) {
+        const name = (v.value || "").replace(/^(Home|Away):\s*/i, "").trim();
+        const odd  = parseFloat(v.odd) || 0;
+        if (name && odd > 1 && !seen.has(name)) {
+          seen.add(name);
+          all.push({ name, odd });
+        }
+      }
+    }
+    return all.sort((a, b) => a.odd - b.odd).slice(0, n);
+  };
+
+  return {
+    homeWin:val(1,"Home","Match Winner"), draw:val(1,"Draw","Match Winner"), awayWin:val(1,"Away","Match Winner"),
+    homeWinNoDraw:val(2,"Home","Home/Away"), awayWinNoDraw:val(2,"Away","Home/Away"),
+    bttsYes:val(8,"Yes","Both Teams Score"), bttsNo:val(8,"No","Both Teams Score"),
+    over05:val(5,"Over 0.5","Goals Over/Under"),  under05:val(5,"Under 0.5","Goals Over/Under"),
+    over15:val(5,"Over 1.5","Goals Over/Under"),  under15:val(5,"Under 1.5","Goals Over/Under"),
+    over25:val(5,"Over 2.5","Goals Over/Under"),  under25:val(5,"Under 2.5","Goals Over/Under"),
+    over35:val(5,"Over 3.5","Goals Over/Under"),  under35:val(5,"Under 3.5","Goals Over/Under"),
+    over45:val(5,"Over 4.5","Goals Over/Under"),  under45:val(5,"Under 4.5","Goals Over/Under"),
+    goalsOdd:val(21,"Odd","Goals Odd/Even"), goalsEven:val(21,"Even","Goals Odd/Even"),
+    homeOver05:val(16,"Over 0.5","Total - Home"), homeUnder05:val(16,"Under 0.5","Total - Home"),
+    homeOver15:val(16,"Over 1.5","Total - Home"), homeUnder15:val(16,"Under 1.5","Total - Home"),
+    homeOver25:val(16,"Over 2.5","Total - Home"), homeUnder25:val(16,"Under 2.5","Total - Home"),
+    awayOver05:val(17,"Over 0.5","Total - Away"), awayUnder05:val(17,"Under 0.5","Total - Away"),
+    awayOver15:val(17,"Over 1.5","Total - Away"), awayUnder15:val(17,"Under 1.5","Total - Away"),
+    awayOver25:val(17,"Over 2.5","Total - Away"), awayUnder25:val(17,"Under 2.5","Total - Away"),
+    bttsFirstHalf:val(34,"Yes","Both Teams Score - First Half"),
+    bttsSecondHalf:val(35,"Yes","Both Teams To Score - Second Half"),
+    htHomeWin:val(13,"Home","First Half Winner"), htDraw:val(13,"Draw","First Half Winner"), htAwayWin:val(13,"Away","First Half Winner"),
+    shHomeWin:val(3,"Home","Second Half Winner"), shDraw:val(3,"Draw","Second Half Winner"), shAwayWin:val(3,"Away","Second Half Winner"),
+    homeOrDraw:val(12,"Home/Draw","Double Chance"), awayOrDraw:val(12,"Draw/Away","Double Chance"), homeOrAway:val(12,"Home/Away","Double Chance"),
+    dnbHome:val(null,"Home","Draw No Bet"), dnbAway:val(null,"Away","Draw No Bet"),
+    firstTeamHome:val(14,"Home","Team To Score First"), firstTeamAway:val(14,"Away","Team To Score First"), firstTeamNone:val(14,"No Goal","Team To Score First"),
+    lastTeamHome:val(15,"Home","Team To Score Last"), lastTeamAway:val(15,"Away","Team To Score Last"),
+    correctScores:sList(10,"Exact Score"),
+    ahHome05:val(4,"Home -0.5","Asian Handicap"), ahAway05:val(4,"Away -0.5","Asian Handicap"),
+    ahHome15:val(4,"Home -1.5","Asian Handicap"), ahAway15:val(4,"Away -1.5","Asian Handicap"),
+    homeWinToNil:val(29,"Yes","Win to Nil - Home"), awayWinToNil:val(30,"Yes","Win to Nil - Away"),
+    bttsAndHomeWin:val(null,"Yes/Home","Results/Both Teams Score")||val(null,"Home/Yes","Results/Both Teams Score"),
+    bttsAndDraw:val(null,"Yes/Draw","Results/Both Teams Score")||val(null,"Draw/Yes","Results/Both Teams Score"),
+    bttsAndAwayWin:val(null,"Yes/Away","Results/Both Teams Score")||val(null,"Away/Yes","Results/Both Teams Score"),
+    exactGoals0:val(38,"0","Exact Goals Number"), exactGoals1:val(38,"1","Exact Goals Number"),
+    exactGoals2:val(38,"2","Exact Goals Number"), exactGoals3:val(38,"3","Exact Goals Number"),
+    exactGoals4:val(38,"4","Exact Goals Number"), exactGoals5plus:val(38,"5+","Exact Goals Number"),
+    homeCleanSheet:val(27,"Yes","Clean Sheet - Home"), awayCleanSheet:val(28,"Yes","Clean Sheet - Away"),
+    htftHomeHome:val(7,"Home/Home","HT/FT Double"), htftDrawHome:val(7,"Draw/Home","HT/FT Double"),
+    htftAwayHome:val(7,"Away/Home","HT/FT Double"), htftHomeDraw:val(7,"Home/Draw","HT/FT Double"),
+    htftDrawDraw:val(7,"Draw/Draw","HT/FT Double"), htftAwayDraw:val(7,"Away/Draw","HT/FT Double"),
+    htftHomeAway:val(7,"Home/Away","HT/FT Double"), htftDrawAway:val(7,"Draw/Away","HT/FT Double"),
+    htftAwayAway:val(7,"Away/Away","HT/FT Double"),
+    cornersOver75:val(45,"Over 7.5","Corners Over Under"),   cornersUnder75:val(45,"Under 7.5","Corners Over Under"),
+    cornersOver85:val(45,"Over 8.5","Corners Over Under"),   cornersUnder85:val(45,"Under 8.5","Corners Over Under"),
+    cornersOver95:val(45,"Over 9.5","Corners Over Under"),   cornersUnder95:val(45,"Under 9.5","Corners Over Under"),
+    cornersOver105:val(45,"Over 10.5","Corners Over Under"), cornersUnder105:val(45,"Under 10.5","Corners Over Under"),
+    htCornersOver35:val(77,"Over 3.5","Total Corners (1st Half)"),  htCornersUnder35:val(77,"Under 3.5","Total Corners (1st Half)"),
+    htCornersOver45:val(77,"Over 4.5","Total Corners (1st Half)"),  htCornersUnder45:val(77,"Under 4.5","Total Corners (1st Half)"),
+    bttsBothHalves:val(null,"Yes","Both Teams Score in Both Halves"),
+    shotsOver85:val(87,"Over 8.5","Total ShotOnGoal"),   shotsUnder85:val(87,"Under 8.5","Total ShotOnGoal"),
+    shotsOver105:val(87,"Over 10.5","Total ShotOnGoal"), shotsUnder105:val(87,"Under 10.5","Total ShotOnGoal"),
+    shotsOver125:val(87,"Over 12.5","Total ShotOnGoal"), shotsUnder125:val(87,"Under 12.5","Total ShotOnGoal"),
+    // ✅ Player props — correct IDs confirmed from debug (bookmaker 8)
+    // IDs 92+218+231 = Anytime scorer combined (both teams)
+    // IDs 93+219+232 = First goalscorer combined
+    // IDs 94+226+233 = Last goalscorer combined
+    playerAnytime:       mergePlayerLists([92, 218, 231]),
+    playerFirstGoal:     mergePlayerLists([93, 219, 232]),
+    playerLastGoal:      mergePlayerLists([94, 226, 233]),
+    playerToAssist:      pList(212, "Player Assists"),
+    playerShotsOnTarget: pList(242, "Player Shots On Target", 10),
+    playerToBeFouled:    pList(266, "Player Fouls Committed"),
+    playerToBeCarded:    pList(null, "Player To Be Carded"),
+    playerToBeScored2:   pListAny(["2 or more goals", "brace scorer", "score 2+", "to score 2"], 8),
+    playerHatTrick:      pListAny(["hat-trick", "hat trick", "3 or more goals", "score 3+", "to score 3"], 8),
+    homeScoreBothHalves:val(null,"Home","To Score In Both Halves By Teams"),
+    awayScoreBothHalves:val(null,"Away","To Score In Both Halves By Teams"),
+    cardsOver15:val(80,"Over 1.5","Cards Over/Under"),   cardsUnder15:val(80,"Under 1.5","Cards Over/Under"),
+    cardsOver25:val(80,"Over 2.5","Cards Over/Under"),   cardsUnder25:val(80,"Under 2.5","Cards Over/Under"),
+    cardsOver35:val(80,"Over 3.5","Cards Over/Under"),   cardsUnder35:val(80,"Under 3.5","Cards Over/Under"),
+    cardsOver45:val(80,"Over 4.5","Cards Over/Under"),   cardsUnder45:val(80,"Under 4.5","Cards Over/Under"),
+    homeGoalsOdd:val(23,"Odd","Home Odd/Even"), homeGoalsEven:val(23,"Even","Home Odd/Even"),
+    awayGoalsOdd:val(60,"Odd","Away Odd/Even"), awayGoalsEven:val(60,"Even","Away Odd/Even"),
+    winMarginHome1:val(47,"Home by 1","Winning Margin"), winMarginHome2:val(47,"Home by 2","Winning Margin"),
+    winMarginHome3:val(47,"Home by 3+","Winning Margin")||val(47,"Home by 3","Winning Margin"),
+    winMarginAway1:val(47,"Away by 1","Winning Margin"), winMarginAway2:val(47,"Away by 2","Winning Margin"),
+    winMarginAway3:val(47,"Away by 3+","Winning Margin")||val(47,"Away by 3","Winning Margin"),
+    winMarginDraw:val(47,"Draw","Winning Margin"),
+    correctScoresHT:sList(31,"Correct Score - First Half",25,8),
+    correctScoresSH:sList(62,"Correct Score - Second Half",25,8),
+    htOver05:val(6,"Over 0.5","Goals Over/Under First Half"), htUnder05:val(6,"Under 0.5","Goals Over/Under First Half"),
+    htOver15:val(6,"Over 1.5","Goals Over/Under First Half"), htUnder15:val(6,"Under 1.5","Goals Over/Under First Half"),
+  };
+}
 
 app.get("/api/debug", async(req,res)=>{
   if(!process.env.API_FOOTBALL_KEY) return res.json({error:"API_FOOTBALL_KEY missing"});
