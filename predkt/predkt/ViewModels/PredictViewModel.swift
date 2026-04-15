@@ -45,6 +45,7 @@ final class PredictViewModel: ObservableObject {
         let group: String
         
         var xpValue: Int { max(1, 10 + (100 - probability)) }
+        func liveXpValue() -> Int { max(1, Int(round(50.0 * odds * 0.4))) }
         var probabilityDisplay: String { "\(probability)%" }
         var communityPercent: Int { min(92, max(8, probability)) }
         
@@ -431,7 +432,7 @@ final class PredictViewModel: ObservableObject {
     
     func loadOdds(for match: Match) async {
         currentMatchOdds = nil
-        guard !match.isLive, !match.isFinished else { return }
+        guard !match.isFinished else { return }
         isLoadingOdds    = true
         currentMatchOdds = await APIManager.fetchOdds(for: match)
         isLoadingOdds    = false
@@ -878,10 +879,7 @@ final class PredictViewModel: ObservableObject {
             errorMessage = "Lock in at least one answer"
             return false
         }
-        guard !match.isLive else {
-            errorMessage = "You can't predict on a live match"
-            return false
-        }
+        
         
         // Max 5 different matches per day
         let isNewMatch = !predictedTodayMatches.contains(match.displayName)
@@ -910,13 +908,14 @@ final class PredictViewModel: ObservableObject {
         let comboId = isCombo ? UUID().uuidString : nil
         do {
             for answer in lockedAnswers {
+                let xp = match.isLive ? answer.liveXpValue() : answer.xpValue
                 try await supabaseManager.createPick(
                     match:          match.displayName,
                     market:         answer.label,
                     odds:           answer.odds,
                     probability:    answer.probability,
-                    pointsPossible: answer.xpValue,
-                    pointsLost:     max(1, answer.xpValue / 2),
+                    pointsPossible: xp,
+                    pointsLost:     max(1, xp / 2),
                     comboId:        comboId
                 )
             }

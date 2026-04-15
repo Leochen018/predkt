@@ -37,10 +37,7 @@ struct PredictView: View {
                 }
             }
         }
-        .alert(
-            selectedMatch?.isLive == true ? "Match is live 🔴" : "Daily limit reached 🎯",
-            isPresented: $showingLimitAlert
-        ) {
+        .alert("Daily limit reached 🎯", isPresented: $showingLimitAlert) {
             Button("View My Picks") {
                 NotificationCenter.default.post(
                     name: Notification.Name("predkt.switchTab"),
@@ -53,11 +50,7 @@ struct PredictView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            if selectedMatch?.isLive == true {
-                Text("You can't predict on a match that's already in progress.\n\nView your existing predictions in My Picks.")
-            } else {
-                Text("You've predicted on 5 matches today — that's your limit!\n\nRemove a prediction in My Picks to free up a slot.")
-            }
+            Text("You've predicted on 5 matches today — that's your limit!\n\nRemove a prediction in My Picks to free up a slot.")
         }
         
         .sheet(isPresented: $showingQuestions) {
@@ -154,22 +147,16 @@ struct PredictView: View {
                 hasFavourites: !viewModel.favouriteLeagueIds.isEmpty || !viewModel.favouriteTeamNames.isEmpty,
                 isFavouriteMatch: { viewModel.isFavouriteMatch($0) },
                 onSelect: { match in
-                    // Rule 1: Never allow predictions on live matches
-                    if match.isLive {
-                        selectedMatch = match
-                        showingLimitAlert = true
-                        return
-                    }
-
-                    // Rule 2: New match but already at 5 match limit
                     let isNewMatch = !viewModel.predictedTodayMatches.contains(match.displayName)
+
+                    // Block if at 5 match limit (live or not)
                     if isNewMatch && viewModel.predictedTodayMatches.count >= 5 {
                         selectedMatch = match
                         showingLimitAlert = true
                         return
                     }
 
-                    // Rule 3: Already predicted on this match OR under limit — open sheet
+                    // Allow — open sheet (live picks get penalty XP, shown in sheet)
                     viewModel.clearAnswers()
                     selectedMatch = match
                     showingQuestions = true
@@ -500,7 +487,6 @@ private struct SkeletonLeagueSection: View {
 }
 
 // MARK: - Questions Sheet
-
 struct QuestionsSheetView: View {
     let match: Match
     @ObservedObject var viewModel: PredictViewModel
@@ -520,7 +506,7 @@ struct QuestionsSheetView: View {
                     ScrollView(showsIndicators: false) {
                         LazyVStack(spacing: 20) {
                             ForEach(questions) { question in
-                                QuestionCard(question: question, viewModel: viewModel)
+                                QuestionCard(question: question, viewModel: viewModel, isLiveMatch: match.isLive)
                             }
                             Color.clear.frame(height: viewModel.lockedAnswers.isEmpty ? 40 : 110)
                         }
@@ -528,7 +514,10 @@ struct QuestionsSheetView: View {
                     }
                 }
             }
-            if !viewModel.lockedAnswers.isEmpty { submitBar }
+
+            if !viewModel.lockedAnswers.isEmpty {
+                submitBar
+            }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
@@ -542,67 +531,108 @@ struct QuestionsSheetView: View {
         VStack(spacing: 12) {
             HStack {
                 Button(action: { isPresented = false }) {
-                    Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Color.predktMuted).padding(8)
-                        .background(Color.white.opacity(0.07)).cornerRadius(8)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.predktMuted)
+                        .padding(8)
+                        .background(Color.white.opacity(0.07))
+                        .cornerRadius(8)
                 }
                 Spacer()
                 if match.isLive {
                     HStack(spacing: 4) {
                         Circle().fill(Color.predktCoral).frame(width: 6, height: 6)
                         Text("LIVE \(match.elapsed.map { "\($0)'" } ?? "")")
-                            .font(.system(size: 10, weight: .black)).foregroundStyle(Color.predktCoral)
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundStyle(Color.predktCoral)
                     }
                 }
             }
-            .padding(.horizontal, 20).padding(.top, 16)
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
 
             HStack(spacing: 16) {
-                TeamBadgeView(url: match.homeLogo, teamName: match.home).frame(width: 36, height: 36)
-                VStack(spacing: 2) {
+                TeamBadgeView(url: match.homeLogo, teamName: match.home)
+                    .frame(width: 36, height: 36)
+
+                VStack(spacing: 4) {
                     Text(match.displayName)
-                        .font(.system(size: 15, weight: .black)).foregroundStyle(.white)
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
+
                     HStack(spacing: 6) {
-                        Text(match.competition).font(.system(size: 11)).foregroundStyle(Color.predktMuted)
+                        Text(match.competition)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.predktMuted)
                         if !match.isLive, !match.isFinished {
                             Text("·").foregroundStyle(Color.predktMuted)
                             Text("\(match.matchDate) · \(match.kickoffTime)")
-                                .font(.system(size: 11)).foregroundStyle(Color.predktLime)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.predktLime)
                         }
                     }
+
+                    if match.isLive {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color.predktCoral).frame(width: 5, height: 5)
+                            Text("LIVE PICK — 0.4× XP PENALTY")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(Color.predktCoral)
+                                .kerning(0.8)
+                            Text("· Late entry")
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.predktMuted)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.predktCoral.opacity(0.08))
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.predktCoral.opacity(0.2), lineWidth: 1)
+                        )
+                    }
                 }
-                TeamBadgeView(url: match.awayLogo, teamName: match.away).frame(width: 36, height: 36)
+
+                TeamBadgeView(url: match.awayLogo, teamName: match.away)
+                    .frame(width: 36, height: 36)
             }
             .padding(.horizontal, 20)
-
-            if !viewModel.lockedAnswers.isEmpty {
-                LockedAnswersBanner(viewModel: viewModel).padding(.horizontal, 20)
-            }
+            .padding(.bottom, 16)
         }
-        .background(Color.predktCard).padding(.bottom, 1)
+        .background(Color.predktCard)
+        .padding(.bottom, 1)
     }
 
     private var submitBar: some View {
         VStack(spacing: 0) {
             LinearGradient(
                 colors: [Color.predktBg.opacity(0), Color.predktBg],
-                startPoint: .top, endPoint: .bottom
-            ).frame(height: 24)
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 24)
 
             Button(action: {
                 Task {
                     let ok = await viewModel.submitPlays(match: match, myPicksCount: myPicksCount)
-                    if ok { isPresented = false; onSubmit() }
+                    if ok {
+                        isPresented = false
+                        onSubmit()
+                    }
                 }
             }) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(viewModel.isCombo ? "\(viewModel.lockedAnswers.count)-PICK COMBO" : "LOCK IN PLAY")
                             .font(.system(size: 11, weight: .black))
-                            .foregroundStyle(.black.opacity(0.6)).kerning(1)
+                            .foregroundStyle(.black.opacity(0.6))
+                            .kerning(1)
                         Text(viewModel.lockedAnswers.map { $0.shortLabel }.joined(separator: " + "))
-                            .font(.system(size: 13, weight: .bold)).foregroundStyle(.black).lineLimit(1)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.black)
+                            .lineLimit(1)
                     }
                     Spacer()
                     if viewModel.isSubmitting {
@@ -610,19 +640,22 @@ struct QuestionsSheetView: View {
                     } else {
                         HStack(spacing: 4) {
                             Text("+\(viewModel.totalXP)")
-                                .font(.system(size: 22, weight: .black)).foregroundStyle(.black)
+                                .font(.system(size: 22, weight: .black))
+                                .foregroundStyle(.black)
                             Text("XP")
-                                .font(.system(size: 14, weight: .black)).foregroundStyle(.black.opacity(0.6))
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundStyle(.black.opacity(0.6))
                         }
                     }
                 }
-                .padding(.horizontal, 24).frame(height: 62).background(Color.predktLime)
+                .padding(.horizontal, 24)
+                .frame(height: 62)
+                .background(Color.predktLime)
             }
             .disabled(viewModel.isSubmitting)
         }
     }
 }
-
 // MARK: - Questions Skeleton
 
 struct QuestionsSkeleton: View {
@@ -659,6 +692,7 @@ struct QuestionCard: View {
     let question: PredictViewModel.Question
     @ObservedObject var viewModel: PredictViewModel
     @State private var isExpanded = true
+    var isLiveMatch: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -684,7 +718,7 @@ struct QuestionCard: View {
 
                 VStack(spacing: 8) {
                     ForEach(question.answers) { answer in
-                        AnswerPollRow(answer: answer, viewModel: viewModel)
+                        AnswerPollRow(answer: answer, viewModel: viewModel, isLiveMatch: isLiveMatch)
                     }
                 }
                 .padding(.horizontal, 16).padding(.bottom, 16)
@@ -702,6 +736,7 @@ struct QuestionCard: View {
 struct AnswerPollRow: View {
     let answer: PredictViewModel.Answer
     @ObservedObject var viewModel: PredictViewModel
+    var isLiveMatch: Bool = false
 
     var isLocked:     Bool { viewModel.isLocked(answer) }
     var isConflicted: Bool { viewModel.conflicts(answer) }
@@ -766,7 +801,7 @@ struct AnswerPollRow: View {
                                 )
 
                             // XP value
-                            Text("+\(answer.xpValue) XP")
+                            Text("+\(isLiveMatch ? answer.liveXpValue() : answer.xpValue) XP")
                                 .font(.system(size: 12, weight: .black))
                                 .foregroundStyle(isLocked ? Color.predktLime : xpColour)
                         }

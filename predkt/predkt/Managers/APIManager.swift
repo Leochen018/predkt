@@ -187,7 +187,7 @@ final class APIManager {
     static func fetchOdds(for match: Match) async -> MatchOdds? {
         let key = match.id
         if let cached = oddsMemCache[key] { return cached }
-        if match.isLive || match.isFinished { return nil }
+        if match.isLive { return nil }
 
         guard let url = URL(string: "\(baseURL)/api/odds/\(match.id)") else { return nil }
         do {

@@ -79,11 +79,6 @@ struct FeedView: View {
         }
         .onAppear { Task { await viewModel.load() } }
         .sheet(isPresented: $viewModel.showInterestsPicker) { InterestsPickerView(viewModel: viewModel) }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("predkt.switchFeedTab"))) { notification in
-            if let tab = notification.object as? Int {
-                withAnimation { selectedTab = tab }
-            }
-        }
     }
 }
 
@@ -317,34 +312,26 @@ struct MyPicksFeed: View {
     // Group by date — newest first
     private var picksByDate: [(date: Date, blocks: [PickComboBlock])] {
         let cal = Calendar.current
-        let f1  = ISO8601DateFormatter(); f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let f2  = ISO8601DateFormatter(); f2.formatOptions = [.withInternetDateTime]
+            let f1  = ISO8601DateFormatter(); f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let f2  = ISO8601DateFormatter(); f2.formatOptions = [.withInternetDateTime]
+            let f3  = DateFormatter()
+            f3.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+            f3.timeZone   = TimeZone(identifier: "UTC")
+            f3.locale     = Locale(identifier: "en_US_POSIX")
+            let f4  = DateFormatter()
+            f4.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            f4.timeZone   = TimeZone(identifier: "UTC")
+            f4.locale     = Locale(identifier: "en_US_POSIX")
 
-        var grouped: [Date: [Pick]] = [:]
-
-        let f3 = DateFormatter()
-        f3.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-        f3.timeZone = TimeZone(identifier: "UTC")
-        f3.locale = Locale(identifier: "en_US_POSIX")
-
-        let f4 = DateFormatter()
-        f4.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        f4.timeZone = TimeZone(identifier: "UTC")
-        f4.locale = Locale(identifier: "en_US_POSIX")
-
-        for pick in viewModel.myPicks {
-            let raw = pick.created_at
-            let d = f1.date(from: raw)
-                ?? f2.date(from: raw)
-                ?? f3.date(from: raw)
-                ?? f4.date(from: raw)
-            guard let d = d else {
-                print("⚠️ Failed to parse: \(raw)")
-                continue
-            }
+            var grouped: [Date: [Pick]] = [:]
+            for pick in viewModel.myPicks {
+                let raw = pick.created_at.replacingOccurrences(of: " ", with: "T")
+                guard let d = f1.date(from: raw) ?? f2.date(from: raw)
+                           ?? f3.date(from: raw) ?? f4.date(from: raw) else { continue }
             let day = cal.startOfDay(for: d)
             grouped[day, default: []].append(pick)
         }
+
         return grouped
             .map { (date: $0.key, blocks: groupPicksIntoCombos($0.value)) }
             .sorted { $0.date > $1.date }
@@ -362,7 +349,7 @@ struct MyPicksFeed: View {
         ZStack(alignment: .bottom) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 14) {
-                    let _ = print("🔍 myPicks count: \(viewModel.myPicks.count), picksByDate: \(picksByDate.count), sample: \(viewModel.myPicks.first?.created_at ?? "none")")
+                  
                     if viewModel.myPicks.isEmpty {
                         VStack(spacing: 16) {
                             Text("🎯").font(.system(size: 48))
@@ -433,7 +420,8 @@ struct MyPicksFeed: View {
                                     MyComboCard(
                                         block: block,
                                         deletingId: deletingId,
-                                        onDelete: { pick in confirmDeleteId = pick.id }
+                                        onDelete: { pick in confirmDeleteId = pick.id },
+                                        matches: viewModel.allMatches
                                     )
                                     .padding(.horizontal, 16)
                                 }
@@ -812,6 +800,14 @@ struct MyComboCard: View {
     let block: PickComboBlock
     let deletingId: String?
     let onDelete: (Pick) -> Void
+    var matches: [Match] = []
+
+    private func matchHasStarted() -> Bool {
+        if let match = matches.first(where: { $0.displayName == block.matchName }) {
+            return match.isLive || match.isFinished
+        }
+        return false
+    }
 
     private func pickColour(_ pick: Pick) -> Color {
         switch pick.result {
@@ -869,7 +865,7 @@ struct MyComboCard: View {
                     Spacer()
 
                     // Remove button — only for pending picks
-                    if pick.result == "pending" {
+                    if pick.result == "pending" && !matchHasStarted(){
                         if deletingId == pick.id {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: Color.predktCoral))
