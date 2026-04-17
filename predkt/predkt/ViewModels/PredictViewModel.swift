@@ -5,7 +5,7 @@ import UIKit
 
 @MainActor
 final class PredictViewModel: ObservableObject {
-    
+
     @Published var matches: [Match] = []
     @Published var selectedDate: Date = Calendar.current.startOfDay(for: Date())
     @Published var isLoading = false
@@ -20,22 +20,25 @@ final class PredictViewModel: ObservableObject {
     @Published var favouriteTeamNames: Set<String> = []
     @Published var predictedTodayMatches: Set<String> = []
     private var livePollingTask: Task<Void, Never>?
-    
+
     private var matchesLoaded = false
     private var cancellables = Set<AnyCancellable>()
     private var dateChangeTask: Task<Void, Never>?
     private let supabaseManager = SupabaseManager.shared
     private var profileLoaded = false
-    
+
     static let leaguePriority: [String] = [
         "Premier League", "Championship", "Champions League", "Europa League",
         "Conference League", "FA Cup", "EFL Cup", "La Liga", "La Liga 2",
         "Serie A", "Serie B", "Bundesliga", "Bundesliga 2", "Ligue 1",
         "Ligue 2", "Primeira Liga", "Eredivisie",
     ]
-    
+
+    // Base group prefixes where up to 2 answers can be locked simultaneously
+    private static let multiSelectBases: Set<String> = ["any", "first", "last", "score2", "hattrick"]
+
     // MARK: - Answer / Question
-    
+
     struct Answer: Identifiable, Equatable {
         let id = UUID()
         let label: String
@@ -43,14 +46,14 @@ final class PredictViewModel: ObservableObject {
         let probability: Int
         let odds: Double
         let group: String
-        
+
         var xpValue: Int { max(1, 10 + (100 - probability)) }
         func liveXpValue() -> Int { max(1, Int(round(50.0 * odds * 0.4))) }
         var probabilityDisplay: String { "\(probability)%" }
         var communityPercent: Int { min(92, max(8, probability)) }
-        
+
         static func == (lhs: Answer, rhs: Answer) -> Bool { lhs.id == rhs.id }
-        
+
         init(_ label: String, short: String, odds: Double, group: String) {
             self.label = label
             self.shortLabel = short
@@ -59,7 +62,7 @@ final class PredictViewModel: ObservableObject {
             self.probability = min(99, max(1, Int(round(1.0 / odds * 100))))
         }
     }
-    
+
     struct Question: Identifiable {
         let id = UUID()
         let category: String
@@ -67,32 +70,74 @@ final class PredictViewModel: ObservableObject {
         let icon: String
         let answers: [Answer]
     }
-    
-    var totalXP: Int  { lockedAnswers.reduce(0) { $0 + $1.xpValue } }
+
+    // MARK: - Multi-select helpers
+
+    /// Returns the base group name for player scorer markets, nil otherwise.
+    func playerGroupBase(_ group: String) -> String? {
+        for base in Self.multiSelectBases {
+            if group.hasPrefix("\(base)_") { return base }
+        }
+        return nil
+    }
+
+    /// True when tapping this answer should be blocked (player group already full, answer not yet selected).
+    func isAtPlayerLimit(_ answer: Answer) -> Bool {
+        guard let base = playerGroupBase(answer.group) else { return false }
+        guard !isLocked(answer) else { return false }
+        return lockedAnswers.filter { playerGroupBase($0.group) == base }.count >= 2
+    }
+
+    /// XP with Safety Rule applied: halves each player's XP when two are selected from the same base group.
+    func effectiveXP(for answer: Answer, isLive: Bool) -> Int {
+        let base = isLive ? answer.liveXpValue() : answer.xpValue
+        guard let grpBase = playerGroupBase(answer.group) else { return base }
+        let count = lockedAnswers.filter { playerGroupBase($0.group) == grpBase }.count
+        return count >= 2 ? max(1, base / 2) : base
+    }
+
+    var totalXP: Int {
+        lockedAnswers.reduce(0) { $0 + effectiveXP(for: $1, isLive: false) }
+    }
     var isCombo: Bool { lockedAnswers.count > 1 }
-    
+
     func lockAnswer(_ answer: Answer) {
         if let idx = lockedAnswers.firstIndex(of: answer) {
+            // Toggle off
             lockedAnswers.remove(at: idx)
+        } else if let base = playerGroupBase(answer.group) {
+            // Multi-select: allow up to 2 from the same player base group
+            let picked = lockedAnswers.filter { playerGroupBase($0.group) == base }
+            guard picked.count < 2 else { return }  // caller handles haptic/toast
+            lockedAnswers.append(answer)
         } else {
+            // Standard single-select: replace any existing pick in the same group
             lockedAnswers.removeAll { $0.group == answer.group }
             lockedAnswers.append(answer)
         }
     }
-    
+
     func isLocked(_ a: Answer) -> Bool  { lockedAnswers.contains(a) }
-    func conflicts(_ a: Answer) -> Bool { lockedAnswers.contains { $0.group == a.group && $0 != a } }
+
+    func conflicts(_ a: Answer) -> Bool {
+        if let base = playerGroupBase(a.group) {
+            let picked = lockedAnswers.filter { playerGroupBase($0.group) == base }
+            return picked.count >= 2 && !picked.contains(a)
+        }
+        return lockedAnswers.contains { $0.group == a.group && $0 != a }
+    }
+
     func clearAnswers() { lockedAnswers = []; currentMatchOdds = nil }
-    
+
     // MARK: - Navigation
-    
+
     func goToNextDay() {
         let next = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
         selectedDate = next
         scheduleRegroup()
         APIManager.prefetchOdds(for: matchesForDate(next))
     }
-    
+
     func goToPreviousDay() {
         let today = Calendar.current.startOfDay(for: Date())
         let prev  = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
@@ -101,9 +146,9 @@ final class PredictViewModel: ObservableObject {
         scheduleRegroup()
         APIManager.prefetchOdds(for: matchesForDate(prev))
     }
-    
+
     // MARK: - Date Helpers
-    
+
     private static let localDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
@@ -111,100 +156,95 @@ final class PredictViewModel: ObservableObject {
         f.locale     = Locale(identifier: "en_US_POSIX")
         return f
     }()
-    
+
     private func localDateString(from rawDate: String) -> String {
         let f1 = ISO8601DateFormatter()
         f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let d = f1.date(from: rawDate) { return Self.localDateFormatter.string(from: d) }
-        
+
         let f2 = ISO8601DateFormatter()
         f2.formatOptions = [.withInternetDateTime]
         if let d = f2.date(from: rawDate) { return Self.localDateFormatter.string(from: d) }
-        
+
         return String(rawDate.prefix(10))
     }
-    
+
     private var selectedDateString: String {
         Self.localDateFormatter.string(from: selectedDate)
     }
-    
+
     func matchesForDate(_ date: Date) -> [Match] {
         let target = Self.localDateFormatter.string(from: date)
         return matches.filter { localDateString(from: $0.rawDate) == target }
     }
-    
+
     var datesWithMatches: Set<String> {
         Set(matches.map { localDateString(from: $0.rawDate) })
     }
-    
+
     func hasMatches(on date: Date) -> Bool {
         datesWithMatches.contains(Self.localDateFormatter.string(from: date))
     }
-    
+
     func isFavouriteMatch(_ match: Match) -> Bool {
         favouriteLeagueIds.contains(match.leagueId)
         || favouriteTeamNames.contains(match.home)
         || favouriteTeamNames.contains(match.away)
     }
-    
+
     // MARK: - Background Regroup
-    
+
     func scheduleRegroupPublic() { scheduleRegroup() }
-    
+
     private func scheduleRegroup() {
         dateChangeTask?.cancel()
         dateChangeTask = Task {
-            try? await Task.sleep(nanoseconds: 80_000_000) // 80ms debounce
+            try? await Task.sleep(nanoseconds: 80_000_000)
             guard !Task.isCancelled else { return }
             await regroup()
         }
     }
-    
+
     private func regroup() async {
-        // Capture values before going off-main
         let target     = selectedDateString
         let allMatches = matches
         let favLeagues = favouriteLeagueIds
         let favTeams   = favouriteTeamNames
         let priority   = Self.leaguePriority
-        
-        // Run the heavy filtering + sorting on a background thread
+
         let grouped = await withCheckedContinuation {
             (continuation: CheckedContinuation<[(league: String, matches: [Match], isFavourite: Bool)], Never>) in
-            
+
             DispatchQueue.global(qos: .userInitiated).async {
-                
-                // Date parsing helpers (recreated inside closure — no self needed)
+
                 let fmt = DateFormatter()
                 fmt.dateFormat = "yyyy-MM-dd"
                 fmt.timeZone   = .current
                 fmt.locale     = Locale(identifier: "en_US_POSIX")
-                
+
                 let f1 = ISO8601DateFormatter()
                 f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                 let f2 = ISO8601DateFormatter()
                 f2.formatOptions = [.withInternetDateTime]
-                
+
                 func dateStr(_ raw: String) -> String {
                     if let d = f1.date(from: raw) { return fmt.string(from: d) }
                     if let d = f2.date(from: raw) { return fmt.string(from: d) }
                     return String(raw.prefix(10))
                 }
-                
+
                 func isFav(_ m: Match) -> Bool {
                     favLeagues.contains(m.leagueId)
                     || favTeams.contains(m.home)
                     || favTeams.contains(m.away)
                 }
-                
-                // Filter to selected date
+
                 let filtered = allMatches.filter { dateStr($0.rawDate) == target }
-                
-                // Group by competition
+
                 var order: [String] = []
                 var groups: [String: [Match]] = [:]
                 var leagueFav: [String: Bool] = [:]
-                
+
                 for match in filtered {
                     if groups[match.competition] == nil {
                         order.append(match.competition)
@@ -215,8 +255,7 @@ final class PredictViewModel: ObservableObject {
                         leagueFav[match.competition] = isFav(match)
                     }
                 }
-                
-                // Sort leagues: favourites first, then by priority list, then alphabetically
+
                 order.sort { a, b in
                     let af = leagueFav[a] ?? false
                     let bf = leagueFav[b] ?? false
@@ -230,8 +269,7 @@ final class PredictViewModel: ObservableObject {
                     case (.none, .none):           return a < b
                     }
                 }
-                
-                // Sort matches within each league
+
                 let result: [(league: String, matches: [Match], isFavourite: Bool)] = order.map { league in
                     let sorted = groups[league]!.sorted { a, b in
                         let af = isFav(a)
@@ -242,34 +280,31 @@ final class PredictViewModel: ObservableObject {
                     }
                     return (league: league, matches: sorted, isFavourite: leagueFav[league] ?? false)
                 }
-                
+
                 continuation.resume(returning: result)
             }
         }
-        
-        // Publish on main thread
+
         groupedMatchesForDate = grouped
         filteredCount = grouped.reduce(0) { $0 + $1.matches.count }
     }
-    
+
     // MARK: - Init
-    
+
     init() {
         NotificationCenter.default.publisher(for: .matchesRefreshed)
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
                 guard let self = self,
                       let fresh = notification.object as? [Match] else { return }
-                // ✅ Preserve live match data — don't let background refresh overwrite poll updates
                 let currentLiveIds = Set(self.matches.filter { $0.isLive }.map { $0.id })
                 if currentLiveIds.isEmpty {
                     self.matches = fresh
                 } else {
-                    // Merge: keep current live match data, update everything else from fresh
                     self.matches = fresh.map { match in
                         if currentLiveIds.contains(match.id),
                            let current = self.matches.first(where: { $0.id == match.id }) {
-                            return current // keep the live-polled version
+                            return current
                         }
                         return match
                     }
@@ -279,7 +314,6 @@ final class PredictViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Pause polling when app backgrounds, resume when foregrounded
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.stopLivePolling() }
@@ -290,20 +324,18 @@ final class PredictViewModel: ObservableObject {
             .sink { [weak self] _ in self?.startLivePollingIfNeeded() }
             .store(in: &cancellables)
     }
-    
+
     // MARK: - Load
-    
+
     func loadMatches() async {
         guard !matchesLoaded else { return }
         isLoading = true
         errorMessage = nil
         do {
-            // Matches from disk cache — instant
             let fetchedMatches = try await APIManager.fetchAllMatches()
             matches       = fetchedMatches
             matchesLoaded = true
 
-            // Profile fetch in background — don't block match display
             Task {
                 if let profile = try? await supabaseManager.fetchUserProfile() {
                     await MainActor.run {
@@ -324,7 +356,6 @@ final class PredictViewModel: ObservableObject {
                 }
             }
 
-            // Auto-advance to first day with matches if today is empty
             if !datesWithMatches.contains(selectedDateString) {
                 let cal = Calendar.current
                 for i in 0..<30 {
@@ -343,8 +374,7 @@ final class PredictViewModel: ObservableObject {
         }
         isLoading = false
     }
-    
-    
+
     func refreshMatches() async {
         matchesLoaded = false
         matches = []
@@ -378,10 +408,8 @@ final class PredictViewModel: ObservableObject {
                 guard let self else { break }
 
                 if let liveUpdates = try? await APIManager.fetchLiveMatches() {
-                    print("🔴 Poll: \(liveUpdates.count) live matches, IDs: \(liveUpdates.map { $0.id })")
-                    let cacheSnapshot = await MainActor.run { self.matches.filter { $0.isLive }.map { "\($0.id) \($0.elapsed ?? 0)'" } }
-                    print("🔴 Cache live: \(cacheSnapshot)")
-                     if liveUpdates.isEmpty {
+                    print("Poll: \(liveUpdates.count) live matches")
+                    if liveUpdates.isEmpty {
                         await MainActor.run { self.stopLivePolling() }
                         break
                     }
@@ -397,17 +425,11 @@ final class PredictViewModel: ObservableObject {
                                 || fresh.elapsed    != match.elapsed
                                 || fresh.isFinished != match.isFinished
                                 || fresh.isLive     != match.isLive {
-                                print("🔴 Updating \(match.id): elapsed \(match.elapsed ?? -1)→\(fresh.elapsed ?? -1) score \(match.homeGoals)-\(match.awayGoals)→\(fresh.homeGoals)-\(fresh.awayGoals)")
                                 changed = true
                                 return fresh
                             }
                             return match
                         }
-                        let boliviaMatch = self.matches.first(where: { $0.id == "1483033" })
-                        let boliviaFresh = liveMap["1483033"]
-                        print("🔴 Bolivia cache: \(boliviaMatch?.elapsed ?? -1)' score:\(boliviaMatch?.homeGoals ?? -1)-\(boliviaMatch?.awayGoals ?? -1)")
-                        print("🔴 Bolivia fresh: \(boliviaFresh?.elapsed ?? -1)' score:\(boliviaFresh?.homeGoals ?? -1)-\(boliviaFresh?.awayGoals ?? -1)")
-                        print("🔴 changed = \(changed)")
                         if changed {
                             self.matches = updated
                             Task { await self.regroup() }
@@ -419,7 +441,6 @@ final class PredictViewModel: ObservableObject {
                     }
                 }
 
-                // 30s between polls — fast enough for live scores
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
@@ -429,7 +450,7 @@ final class PredictViewModel: ObservableObject {
         livePollingTask?.cancel()
         livePollingTask = nil
     }
-    
+
     func loadOdds(for match: Match) async {
         currentMatchOdds = nil
         guard !match.isFinished else { return }
@@ -437,13 +458,13 @@ final class PredictViewModel: ObservableObject {
         currentMatchOdds = await APIManager.fetchOdds(for: match)
         isLoadingOdds    = false
     }
-    
+
     // MARK: - Questions
-    
+
     func getQuestions(for match: Match) -> [Question] {
         let o = currentMatchOdds
         var q: [Question] = []
-        
+
         func a(_ label: String, short: String, _ odd: Double?, _ group: String) -> Answer? {
             guard let odd = odd, odd > 1.0 else { return nil }
             return Answer(label, short: short, odds: odd, group: group)
@@ -451,70 +472,52 @@ final class PredictViewModel: ObservableObject {
         func ans(_ items: [Answer?]) -> [Answer] { items.compactMap { $0 } }
         func players(_ list: [PlayerOdd]?, grp: String, limit: Int = 14) -> [Answer] {
             guard let list = list else { return [] }
-            // Sort by odds ascending (lowest odds = most likely = shown first)
             let sorted = list.sorted { $0.odd < $1.odd }
             return sorted.prefix(limit).compactMap { p in
                 guard p.odd > 1, !p.name.isEmpty else { return nil }
-                // ✅ short = player name so locked banner shows "Haaland" not "👤"
                 let shortName = p.name.components(separatedBy: " ").last ?? p.name
                 return Answer(p.name, short: shortName, odds: p.odd, group: "\(grp)_\(p.name)")
             }
         }
-        func playersTagged(_ list: [PlayerOdd]?, grp: String, tag: String, limit: Int = 14) -> [Answer] {
-            guard let list = list else { return [] }
-            return list.sorted { $0.odd < $1.odd }.prefix(limit).compactMap { p in
-                guard p.odd > 1, !p.name.isEmpty else { return nil }
-                let shortName = p.name.components(separatedBy: " ").last ?? p.name
-                return Answer("\(p.name) (\(tag))", short: shortName, odds: p.odd, group: "\(grp)_\(p.name)")
-            }
-        }
-        
+
         // ── 1. MAIN MATCH MARKETS ────────────────────────────────────────────
-        
+
         let r = ans([
             a("\(match.home) Win", short: "HOME", o?.homeWin, "result"),
             a("Draw",              short: "DRAW", o?.draw,    "result"),
             a("\(match.away) Win", short: "AWAY", o?.awayWin, "result"),
         ])
         if !r.isEmpty {
-            q.append(Question(category: "⚽ FULL-TIME RESULT", prompt: "Who wins at full time?", icon: "trophy", answers: r))
+            q.append(Question(category: "FULL-TIME RESULT", prompt: "Who wins at full time?", icon: "trophy", answers: r))
         }
-        
-        let ha = ans([
-            a("\(match.home) to win", short: "HOME", o?.homeWinNoDraw, "ha"),
-            a("\(match.away) to win", short: "AWAY", o?.awayWinNoDraw, "ha"),
-        ])
-        if !ha.isEmpty {
-            q.append(Question(category: "🏆 HOME OR AWAY", prompt: "Who wins? No draw option.", icon: "arrow.left.arrow.right", answers: ha))
-        }
-        
+
         let dc = ans([
             a("\(match.home) or Draw", short: "1X", o?.homeOrDraw, "dc"),
             a("Either team wins",      short: "12", o?.homeOrAway, "dc"),
             a("\(match.away) or Draw", short: "X2", o?.awayOrDraw, "dc"),
         ])
         if !dc.isEmpty {
-            q.append(Question(category: "🛡 DOUBLE CHANCE", prompt: "Cover two of the three outcomes", icon: "shield.lefthalf.filled", answers: dc))
+            q.append(Question(category: "DOUBLE CHANCE", prompt: "Cover two of the three outcomes", icon: "shield.lefthalf.filled", answers: dc))
         }
-        
+
         let dnb = ans([
             a(match.home, short: "HOME", o?.dnbHome, "dnb"),
             a(match.away, short: "AWAY", o?.dnbAway, "dnb"),
         ])
         if !dnb.isEmpty {
-            q.append(Question(category: "🔄 DRAW NO BET", prompt: "Win or get XP back if it's a draw", icon: "arrow.uturn.left.circle", answers: dnb))
+            q.append(Question(category: "DRAW NO BET", prompt: "Win or get XP back if it's a draw", icon: "arrow.uturn.left.circle", answers: dnb))
         }
-        
+
         let ah = ans([
-            a("\(match.home) −0.5", short: "H−0.5", o?.ahHome05, "ah_h05"),
-            a("\(match.away) −0.5", short: "A−0.5", o?.ahAway05, "ah_a05"),
-            a("\(match.home) −1.5", short: "H−1.5", o?.ahHome15, "ah_h15"),
-            a("\(match.away) −1.5", short: "A−1.5", o?.ahAway15, "ah_a15"),
+            a("\(match.home) -0.5", short: "H-0.5", o?.ahHome05, "ah_h05"),
+            a("\(match.away) -0.5", short: "A-0.5", o?.ahAway05, "ah_a05"),
+            a("\(match.home) -1.5", short: "H-1.5", o?.ahHome15, "ah_h15"),
+            a("\(match.away) -1.5", short: "A-1.5", o?.ahAway15, "ah_a15"),
         ])
         if !ah.isEmpty {
-            q.append(Question(category: "⚖️ ASIAN HANDICAP", prompt: "Adjusted result — no draw possible", icon: "scalemass", answers: ah))
+            q.append(Question(category: "ASIAN HANDICAP", prompt: "Adjusted result — no draw possible", icon: "scalemass", answers: ah))
         }
-        
+
         let wm = ans([
             a("\(match.home) win by 1",  short: "H+1", o?.winMarginHome1, "wm"),
             a("\(match.home) win by 2",  short: "H+2", o?.winMarginHome2, "wm"),
@@ -525,19 +528,19 @@ final class PredictViewModel: ObservableObject {
             a("Draw",                    short: "0",   o?.winMarginDraw,  "wm"),
         ])
         if !wm.isEmpty {
-            q.append(Question(category: "📏 WINNING MARGIN", prompt: "By how many goals does a team win?", icon: "ruler", answers: wm))
+            q.append(Question(category: "WINNING MARGIN", prompt: "By how many goals does a team win?", icon: "ruler", answers: wm))
         }
-        
+
         let wtn = ans([
-            a("\(match.home) win & clean sheet", short: "H−NIL", o?.homeWinToNil, "wtn_h"),
-            a("\(match.away) win & clean sheet", short: "A−NIL", o?.awayWinToNil, "wtn_a"),
+            a("\(match.home) win & clean sheet", short: "H-NIL", o?.homeWinToNil, "wtn_h"),
+            a("\(match.away) win & clean sheet", short: "A-NIL", o?.awayWinToNil, "wtn_a"),
         ])
         if !wtn.isEmpty {
-            q.append(Question(category: "🔒 WIN TO NIL", prompt: "A team wins without conceding", icon: "lock.shield", answers: wtn))
+            q.append(Question(category: "WIN TO NIL", prompt: "A team wins without conceding", icon: "lock.shield", answers: wtn))
         }
-        
+
         // ── 2. GOALS & SCORE MARKETS ─────────────────────────────────────────
-        
+
         let goals = ans([
             a("Under 0.5 goals", short: "U0.5", o?.under05, "g05"),
             a("Over 0.5 goals",  short: "O0.5", o?.over05,  "g05"),
@@ -551,9 +554,9 @@ final class PredictViewModel: ObservableObject {
             a("Over 4.5 goals",  short: "O4.5", o?.over45,  "g45"),
         ])
         if !goals.isEmpty {
-            q.append(Question(category: "🥅 TOTAL GOALS — OVER/UNDER", prompt: "Choose a goal line for the full match", icon: "soccerball", answers: goals))
+            q.append(Question(category: "TOTAL GOALS — OVER/UNDER", prompt: "Choose a goal line for the full match", icon: "soccerball", answers: goals))
         }
-        
+
         let exact = ans([
             a("No goals (0)", short: "0",  o?.exactGoals0,    "ex"),
             a("Exactly 1",    short: "1",  o?.exactGoals1,    "ex"),
@@ -563,57 +566,57 @@ final class PredictViewModel: ObservableObject {
             a("5 or more",    short: "5+", o?.exactGoals5plus,"ex"),
         ])
         if !exact.isEmpty {
-            q.append(Question(category: "🔢 EXACT NUMBER OF GOALS", prompt: "How many goals will be scored in total?", icon: "number.circle", answers: exact))
+            q.append(Question(category: "EXACT NUMBER OF GOALS", prompt: "How many goals will be scored in total?", icon: "number.circle", answers: exact))
         }
-        
+
         let oe = ans([
             a("Odd total goals",  short: "ODD",  o?.goalsOdd,  "goals_oe"),
             a("Even total goals", short: "EVEN", o?.goalsEven, "goals_oe"),
         ])
         if !oe.isEmpty {
-            q.append(Question(category: "🎲 GOALS — ODD OR EVEN", prompt: "Will total goals be odd or even?", icon: "dice", answers: oe))
+            q.append(Question(category: "GOALS — ODD OR EVEN", prompt: "Will total goals be odd or even?", icon: "dice", answers: oe))
         }
-        
+
         if let scores = o?.correctScores, !scores.isEmpty {
             let csAns = scores.map { Answer($0.score, short: $0.score, odds: $0.odd, group: "cs_\($0.score)") }
-            q.append(Question(category: "🎯 CORRECT SCORE — FULL TIME", prompt: "What's the exact final scoreline?", icon: "number.circle", answers: csAns))
+            q.append(Question(category: "CORRECT SCORE — FULL TIME", prompt: "What's the exact final scoreline?", icon: "number.circle", answers: csAns))
         }
-        
+
         let htft = ans([
             a("Home at HT & FT",   short: "H/H", o?.htftHomeHome, "htft_hh"),
-            a("Draw → Home win",   short: "D/H", o?.htftDrawHome, "htft_dh"),
-            a("Away → Home win",   short: "A/H", o?.htftAwayHome, "htft_ah"),
-            a("Home → Draw",       short: "H/D", o?.htftHomeDraw, "htft_hd"),
+            a("Draw to Home win",  short: "D/H", o?.htftDrawHome, "htft_dh"),
+            a("Away to Home win",  short: "A/H", o?.htftAwayHome, "htft_ah"),
+            a("Home to Draw",      short: "H/D", o?.htftHomeDraw, "htft_hd"),
             a("Draw at HT & FT",   short: "D/D", o?.htftDrawDraw, "htft_dd"),
-            a("Away → Draw",       short: "A/D", o?.htftAwayDraw, "htft_ad"),
-            a("Home → Away win",   short: "H/A", o?.htftHomeAway, "htft_ha"),
-            a("Draw → Away win",   short: "D/A", o?.htftDrawAway, "htft_da"),
+            a("Away to Draw",      short: "A/D", o?.htftAwayDraw, "htft_ad"),
+            a("Home to Away win",  short: "H/A", o?.htftHomeAway, "htft_ha"),
+            a("Draw to Away win",  short: "D/A", o?.htftDrawAway, "htft_da"),
             a("Away at HT & FT",   short: "A/A", o?.htftAwayAway, "htft_aa"),
         ])
         if !htft.isEmpty {
-            q.append(Question(category: "📈 HALF-TIME / FULL-TIME", prompt: "Pick the result at the break AND at full time", icon: "arrow.up.right.circle", answers: htft))
+            q.append(Question(category: "HALF-TIME / FULL-TIME", prompt: "Pick the result at the break AND at full time", icon: "arrow.up.right.circle", answers: htft))
         }
-        
+
         // ── 3. HALF-TIME SPECIFIC MARKETS ────────────────────────────────────
-        
+
         let ht = ans([
             a("\(match.home) lead at HT", short: "HOME", o?.htHomeWin, "ht_r"),
             a("Level at half time",       short: "DRAW", o?.htDraw,    "ht_r"),
             a("\(match.away) lead at HT", short: "AWAY", o?.htAwayWin, "ht_r"),
         ])
         if !ht.isEmpty {
-            q.append(Question(category: "📊 FIRST HALF — RESULT", prompt: "Who's ahead at the break?", icon: "clock", answers: ht))
+            q.append(Question(category: "FIRST HALF — RESULT", prompt: "Who's ahead at the break?", icon: "clock", answers: ht))
         }
-        
+
         let sh = ans([
             a("\(match.home) win 2nd half", short: "HOME", o?.shHomeWin, "sh_r"),
             a("Draw in 2nd half",           short: "DRAW", o?.shDraw,    "sh_r"),
             a("\(match.away) win 2nd half", short: "AWAY", o?.shAwayWin, "sh_r"),
         ])
         if !sh.isEmpty {
-            q.append(Question(category: "📊 SECOND HALF — RESULT", prompt: "Who wins just the second half?", icon: "clock.arrow.2.circlepath", answers: sh))
+            q.append(Question(category: "SECOND HALF — RESULT", prompt: "Who wins just the second half?", icon: "clock.arrow.2.circlepath", answers: sh))
         }
-        
+
         let htg = ans([
             a("Under 0.5 goals before HT", short: "U0.5", o?.htUnder05, "htg05"),
             a("Over 0.5 goals before HT",  short: "O0.5", o?.htOver05,  "htg05"),
@@ -621,94 +624,105 @@ final class PredictViewModel: ObservableObject {
             a("Over 1.5 goals before HT",  short: "O1.5", o?.htOver15,  "htg15"),
         ])
         if !htg.isEmpty {
-            q.append(Question(category: "⏱ FIRST HALF — GOALS", prompt: "Goals before the half-time whistle", icon: "1.circle.fill", answers: htg))
+            q.append(Question(category: "FIRST HALF — GOALS", prompt: "Goals before the half-time whistle", icon: "1.circle.fill", answers: htg))
         }
-        
+
         if let scores = o?.correctScoresHT, !scores.isEmpty {
             let csAns = scores.map { Answer("HT: \($0.score)", short: $0.score, odds: $0.odd, group: "cs_ht_\($0.score)") }
-            q.append(Question(category: "🎯 CORRECT SCORE — HALF TIME", prompt: "What's the scoreline at the break?", icon: "number.square", answers: csAns))
+            q.append(Question(category: "CORRECT SCORE — HALF TIME", prompt: "What's the scoreline at the break?", icon: "number.square", answers: csAns))
         }
-        
+
         if let scores = o?.correctScoresSH, !scores.isEmpty {
             let csAns = scores.map { Answer("2H: \($0.score)", short: $0.score, odds: $0.odd, group: "cs_sh_\($0.score)") }
-            q.append(Question(category: "🎯 CORRECT SCORE — 2ND HALF", prompt: "Goals scored in the second half only", icon: "number.square.fill", answers: csAns))
+            q.append(Question(category: "CORRECT SCORE — 2ND HALF", prompt: "Goals scored in the second half only", icon: "number.square.fill", answers: csAns))
         }
-        
+
         // ── 4. BOTH TEAMS TO SCORE ────────────────────────────────────────────
-        
+
         let btts = ans([
             a("Yes — both teams score",       short: "YES", o?.bttsYes, "btts"),
             a("No — at least one team blank", short: "NO",  o?.bttsNo,  "btts"),
         ])
         if !btts.isEmpty {
-            q.append(Question(category: "🔀 BOTH TEAMS TO SCORE", prompt: "Do both sides get on the scoresheet?", icon: "arrow.left.and.right.circle", answers: btts))
+            q.append(Question(category: "BOTH TEAMS TO SCORE", prompt: "Do both sides get on the scoresheet?", icon: "arrow.left.and.right.circle", answers: btts))
         }
-        
+
         let bttsW = ans([
             a("Both score & \(match.home) win", short: "BTTS+H", o?.bttsAndHomeWin, "bttsw"),
             a("Both score & draw",              short: "BTTS+D", o?.bttsAndDraw,    "bttsw"),
             a("Both score & \(match.away) win", short: "BTTS+A", o?.bttsAndAwayWin, "bttsw"),
         ])
         if !bttsW.isEmpty {
-            q.append(Question(category: "🔀 BTTS & WINNER", prompt: "Both score — but who takes the points?", icon: "plus.circle", answers: bttsW))
+            q.append(Question(category: "BTTS & WINNER", prompt: "Both score — but who takes the points?", icon: "plus.circle", answers: bttsW))
         }
-        
+
+        // BTTS sub-markets — API only provides "Yes" odds; compute implied "No" odds
+        // so the user always has a Yes/No choice rather than a single-option page.
+        // Formula: noOdds = yesOdds / (yesOdds - 1)  (mathematically fair inverse)
+        func implied(_ yes: Double?) -> Double? {
+            guard let y = yes, y > 1.01 else { return nil }
+            return y / (y - 1.0)
+        }
+
         let bttsH = ans([
-            a("Both score in the first half", short: "1H YES", o?.bttsFirstHalf, "btts1h"),
+            a("Yes — both score before HT",    short: "YES", o?.bttsFirstHalf,          "btts1h"),
+            a("No — at least one blank at HT", short: "NO",  implied(o?.bttsFirstHalf), "btts1h"),
         ])
-        if !bttsH.isEmpty {
-            q.append(Question(category: "🔀 BTTS — FIRST HALF", prompt: "Do both teams score before half time?", icon: "1.circle", answers: bttsH))
+        if bttsH.count >= 2 {
+            q.append(Question(category: "BTTS — FIRST HALF", prompt: "Do both teams score before half time?", icon: "1.circle", answers: bttsH))
         }
-        
+
         let bttsS = ans([
-            a("Both score in the second half", short: "2H YES", o?.bttsSecondHalf, "btts2h"),
+            a("Yes — both score after HT",     short: "YES", o?.bttsSecondHalf,          "btts2h"),
+            a("No — at least one blank at HT", short: "NO",  implied(o?.bttsSecondHalf), "btts2h"),
         ])
-        if !bttsS.isEmpty {
-            q.append(Question(category: "🔀 BTTS — SECOND HALF", prompt: "Do both teams score after half time?", icon: "2.circle", answers: bttsS))
+        if bttsS.count >= 2 {
+            q.append(Question(category: "BTTS — SECOND HALF", prompt: "Do both teams score after half time?", icon: "2.circle", answers: bttsS))
         }
-        
+
         let bttsBH = ans([
-            a("Both teams score in BOTH halves", short: "BOTH", o?.bttsBothHalves, "btts_bh"),
+            a("Yes — both score in each half", short: "YES", o?.bttsBothHalves,          "btts_bh"),
+            a("No",                            short: "NO",  implied(o?.bttsBothHalves), "btts_bh"),
         ])
-        if !bttsBH.isEmpty {
-            q.append(Question(category: "🔀 BTTS — BOTH HALVES", prompt: "Both teams score in each half?", icon: "arrow.left.and.right", answers: bttsBH))
+        if bttsBH.count >= 2 {
+            q.append(Question(category: "BTTS — BOTH HALVES", prompt: "Both teams score in each half?", icon: "arrow.left.and.right", answers: bttsBH))
         }
-        
+
         let sbh = ans([
             a("\(match.home) score in both halves", short: "H BOTH", o?.homeScoreBothHalves, "sbh_h"),
             a("\(match.away) score in both halves", short: "A BOTH", o?.awayScoreBothHalves, "sbh_a"),
         ])
         if !sbh.isEmpty {
-            q.append(Question(category: "🔁 SCORE IN BOTH HALVES", prompt: "Does one team score in each half?", icon: "arrow.triangle.2.circlepath", answers: sbh))
+            q.append(Question(category: "SCORE IN BOTH HALVES", prompt: "Does one team score in each half?", icon: "arrow.triangle.2.circlepath", answers: sbh))
         }
-        
+
         // ── 5. TEAM PERFORMANCE ───────────────────────────────────────────────
-        
+
         let cs = ans([
             a("\(match.home) keep a clean sheet", short: "HOME", o?.homeCleanSheet, "cs_h"),
             a("\(match.away) keep a clean sheet", short: "AWAY", o?.awayCleanSheet, "cs_a"),
         ])
         if !cs.isEmpty {
-            q.append(Question(category: "🧤 CLEAN SHEET", prompt: "Which keeper keeps a shutout?", icon: "hand.raised.slash", answers: cs))
+            q.append(Question(category: "CLEAN SHEET", prompt: "Which keeper keeps a shutout?", icon: "hand.raised.slash", answers: cs))
         }
-        
+
         let fts = ans([
             a("\(match.home) score first", short: "HOME", o?.firstTeamHome, "fts"),
             a("\(match.away) score first", short: "AWAY", o?.firstTeamAway, "fts"),
             a("No goals in the match",     short: "NONE", o?.firstTeamNone, "fts"),
         ])
         if !fts.isEmpty {
-            q.append(Question(category: "🥇 FIRST TEAM TO SCORE", prompt: "Who opens the scoring?", icon: "flag.checkered", answers: fts))
+            q.append(Question(category: "FIRST TEAM TO SCORE", prompt: "Who opens the scoring?", icon: "flag.checkered", answers: fts))
         }
-        
+
         let lts = ans([
             a("\(match.home) score last", short: "HOME", o?.lastTeamHome, "lts"),
             a("\(match.away) score last", short: "AWAY", o?.lastTeamAway, "lts"),
         ])
         if !lts.isEmpty {
-            q.append(Question(category: "🏁 LAST TEAM TO SCORE", prompt: "Who gets the final goal?", icon: "flag.fill", answers: lts))
+            q.append(Question(category: "LAST TEAM TO SCORE", prompt: "Who gets the final goal?", icon: "flag.fill", answers: lts))
         }
-        
+
         let hg = ans([
             a("\(match.home) score 1+", short: "1+", o?.homeOver05,  "hg05"),
             a("\(match.home) score 0",  short: "0",  o?.homeUnder05, "hg05"),
@@ -717,9 +731,9 @@ final class PredictViewModel: ObservableObject {
             a("\(match.home) score 3+", short: "3+", o?.homeOver25,  "hg25"),
         ])
         if !hg.isEmpty {
-            q.append(Question(category: "🏠 \(match.home.uppercased()) — GOALS", prompt: "How many does \(match.home) score?", icon: "house.fill", answers: hg))
+            q.append(Question(category: "\(match.home.uppercased()) — GOALS", prompt: "How many does \(match.home) score?", icon: "house.fill", answers: hg))
         }
-        
+
         let ag2 = ans([
             a("\(match.away) score 1+", short: "1+", o?.awayOver05,  "ag05"),
             a("\(match.away) score 0",  short: "0",  o?.awayUnder05, "ag05"),
@@ -728,11 +742,11 @@ final class PredictViewModel: ObservableObject {
             a("\(match.away) score 3+", short: "3+", o?.awayOver25,  "ag25"),
         ])
         if !ag2.isEmpty {
-            q.append(Question(category: "✈️ \(match.away.uppercased()) — GOALS", prompt: "How many does \(match.away) score?", icon: "airplane", answers: ag2))
+            q.append(Question(category: "\(match.away.uppercased()) — GOALS", prompt: "How many does \(match.away) score?", icon: "airplane", answers: ag2))
         }
-        
+
         // ── 6. CORNERS ────────────────────────────────────────────────────────
-        
+
         let corners = ans([
             a("Under 7.5 corners",  short: "U7.5",  o?.cornersUnder75,  "c75"),
             a("Over 7.5 corners",   short: "O7.5",  o?.cornersOver75,   "c75"),
@@ -744,9 +758,9 @@ final class PredictViewModel: ObservableObject {
             a("Over 10.5 corners",  short: "O10.5", o?.cornersOver105,  "c105"),
         ])
         if !corners.isEmpty {
-            q.append(Question(category: "🚩 CORNERS — TOTAL", prompt: "How many corners in the full match?", icon: "flag", answers: corners))
+            q.append(Question(category: "CORNERS — TOTAL", prompt: "How many corners in the full match?", icon: "flag", answers: corners))
         }
-        
+
         let htc = ans([
             a("Under 3.5 HT corners", short: "U3.5", o?.htCornersUnder35, "htc35"),
             a("Over 3.5 HT corners",  short: "O3.5", o?.htCornersOver35,  "htc35"),
@@ -754,11 +768,11 @@ final class PredictViewModel: ObservableObject {
             a("Over 4.5 HT corners",  short: "O4.5", o?.htCornersOver45,  "htc45"),
         ])
         if !htc.isEmpty {
-            q.append(Question(category: "🚩 CORNERS — FIRST HALF", prompt: "How many corners before the break?", icon: "flag.fill", answers: htc))
+            q.append(Question(category: "CORNERS — FIRST HALF", prompt: "How many corners before the break?", icon: "flag.fill", answers: htc))
         }
-        
+
         // ── 7. CARDS / BOOKINGS ───────────────────────────────────────────────
-        
+
         let cards = ans([
             a("Under 1.5 cards", short: "U1.5", o?.cardsUnder15, "cr15"),
             a("Over 1.5 cards",  short: "O1.5", o?.cardsOver15,  "cr15"),
@@ -770,9 +784,9 @@ final class PredictViewModel: ObservableObject {
             a("Over 4.5 cards",  short: "O4.5", o?.cardsOver45,  "cr45"),
         ])
         if !cards.isEmpty {
-            q.append(Question(category: "🟨 BOOKINGS — TOTAL CARDS", prompt: "How many yellow cards will be shown?", icon: "rectangle.portrait", answers: cards))
+            q.append(Question(category: "BOOKINGS — TOTAL CARDS", prompt: "How many yellow cards will be shown?", icon: "rectangle.portrait", answers: cards))
         }
-        
+
         let shots = ans([
             a("Under 8.5 shots",  short: "U8.5",  o?.shotsUnder85,  "sh85"),
             a("Over 8.5 shots",   short: "O8.5",  o?.shotsOver85,   "sh85"),
@@ -782,68 +796,65 @@ final class PredictViewModel: ObservableObject {
             a("Over 12.5 shots",  short: "O12.5", o?.shotsOver125,  "sh125"),
         ])
         if !shots.isEmpty {
-            q.append(Question(category: "🎯 SHOTS — TOTAL", prompt: "How many shots are taken in the match?", icon: "scope", answers: shots))
+            q.append(Question(category: "SHOTS — TOTAL", prompt: "How many shots are taken in the match?", icon: "scope", answers: shots))
         }
-        
+
         // ── 8. PLAYER PROPS ───────────────────────────────────────────────────
-        
-        // ── 8. PLAYER PROPS ───────────────────────────────────────────────────────────
 
-        let any = playersTagged(o?.playerAnytime, grp: "any", tag: "anytime")
+        let any = players(o?.playerAnytime, grp: "any")
         if !any.isEmpty {
-            q.append(Question(category: "⚽ ANYTIME GOALSCORER", prompt: "Which player scores at any point?", icon: "person.fill.checkmark", answers: any))
+            q.append(Question(category: "ANYTIME GOALSCORER", prompt: "Which player scores at any point?", icon: "person.fill.checkmark", answers: any))
         }
 
-        let first = playersTagged(o?.playerFirstGoal, grp: "first", tag: "1st goal")
+        let first = players(o?.playerFirstGoal, grp: "first")
         if !first.isEmpty {
-            q.append(Question(category: "🥇 FIRST GOALSCORER", prompt: "Who opens the scoring?", icon: "1.circle.fill", answers: first))
+            q.append(Question(category: "FIRST GOALSCORER", prompt: "Who opens the scoring?", icon: "1.circle.fill", answers: first))
         }
 
-        let last = playersTagged(o?.playerLastGoal, grp: "last", tag: "last goal")
+        let last = players(o?.playerLastGoal, grp: "last")
         if !last.isEmpty {
-            q.append(Question(category: "🏁 LAST GOALSCORER", prompt: "Who scores the final goal?", icon: "flag.checkered", answers: last))
+            q.append(Question(category: "LAST GOALSCORER", prompt: "Who scores the final goal?", icon: "flag.checkered", answers: last))
         }
 
-        let score2 = playersTagged(o?.playerToBeScored2, grp: "score2", tag: "2+ goals")
+        let score2 = players(o?.playerToBeScored2, grp: "score2")
         if !score2.isEmpty {
-            q.append(Question(category: "⚽⚽ PLAYER TO SCORE 2+", prompt: "Who scores a brace or more?", icon: "2.circle.fill", answers: score2))
+            q.append(Question(category: "PLAYER TO SCORE 2+", prompt: "Who scores a brace or more?", icon: "2.circle.fill", answers: score2))
         }
 
-        let hat = playersTagged(o?.playerHatTrick, grp: "hattrick", tag: "hat-trick")
+        let hat = players(o?.playerHatTrick, grp: "hattrick")
         if !hat.isEmpty {
-            q.append(Question(category: "🎩 PLAYER TO SCORE HAT-TRICK", prompt: "Who completes a hat-trick?", icon: "3.circle.fill", answers: hat))
+            q.append(Question(category: "PLAYER TO SCORE HAT-TRICK", prompt: "Who completes a hat-trick?", icon: "3.circle.fill", answers: hat))
         }
 
-        // Keep assist, carded, sot, fouled unchanged (using original players() helper)
         let assist = players(o?.playerToAssist, grp: "assist")
         if !assist.isEmpty {
-            q.append(Question(category: "🅰️ PLAYER TO ASSIST", prompt: "Who creates a goal with an assist?", icon: "hand.point.right.fill", answers: assist))
+            q.append(Question(category: "PLAYER TO ASSIST", prompt: "Who creates a goal with an assist?", icon: "hand.point.right.fill", answers: assist))
         }
-        
+
         let carded = players(o?.playerToBeCarded, grp: "card")
         if !carded.isEmpty {
-            q.append(Question(category: "🟨 PLAYER TO BE BOOKED", prompt: "Which player receives a yellow card?", icon: "rectangle.portrait.fill", answers: carded))
+            q.append(Question(category: "PLAYER TO BE BOOKED", prompt: "Which player receives a yellow card?", icon: "rectangle.portrait.fill", answers: carded))
         }
-        
+
         let sot = players(o?.playerShotsOnTarget, grp: "sot")
         if !sot.isEmpty {
-            q.append(Question(category: "🎯 PLAYER SHOTS ON TARGET", prompt: "Who tests the keeper most?", icon: "scope", answers: sot))
+            q.append(Question(category: "PLAYER SHOTS ON TARGET", prompt: "Who tests the keeper most?", icon: "scope", answers: sot))
         }
-        
+
         let fouled = players(o?.playerToBeFouled, grp: "fouled")
         if !fouled.isEmpty {
-            q.append(Question(category: "🤕 PLAYER TO BE FOULED MOST", prompt: "Who wins the most free kicks?", icon: "figure.fall", answers: fouled))
+            q.append(Question(category: "PLAYER TO BE FOULED MOST", prompt: "Who wins the most free kicks?", icon: "figure.fall", answers: fouled))
         }
-        
+
         return q.isEmpty ? fallbackQuestions(for: match) : q
     }
-    
+
     // MARK: - Fallback Questions
-    
+
     private func fallbackQuestions(for match: Match) -> [Question] {
         return [
             Question(
-                category: "⚽ FULL-TIME RESULT",
+                category: "FULL-TIME RESULT",
                 prompt: "Who wins at full time?",
                 icon: "trophy",
                 answers: [
@@ -853,7 +864,7 @@ final class PredictViewModel: ObservableObject {
                 ]
             ),
             Question(
-                category: "🥅 TOTAL GOALS",
+                category: "TOTAL GOALS",
                 prompt: "Over or under 2.5 goals?",
                 icon: "soccerball",
                 answers: [
@@ -862,7 +873,7 @@ final class PredictViewModel: ObservableObject {
                 ]
             ),
             Question(
-                category: "🔀 BOTH TEAMS TO SCORE",
+                category: "BOTH TEAMS TO SCORE",
                 prompt: "Do both teams score?",
                 icon: "arrow.left.and.right.circle",
                 answers: [
@@ -871,7 +882,7 @@ final class PredictViewModel: ObservableObject {
                 ]
             ),
             Question(
-                category: "📊 FIRST HALF — RESULT",
+                category: "FIRST HALF — RESULT",
                 prompt: "Who leads at half time?",
                 icon: "clock",
                 answers: [
@@ -882,30 +893,26 @@ final class PredictViewModel: ObservableObject {
             ),
         ]
     }
-    
+
     // MARK: - Submit
-    
+
     func submitPlays(match: Match, myPicksCount: Int) async -> Bool {
         guard !lockedAnswers.isEmpty else {
             errorMessage = "Lock in at least one answer"
             return false
         }
-        
-        
-        // Max 5 different matches per day
+
         let isNewMatch = !predictedTodayMatches.contains(match.displayName)
         if isNewMatch && predictedTodayMatches.count >= 5 {
             errorMessage = "You've predicted on 5 matches today — that's your limit!"
             return false
         }
 
-        // Max 5 picks per match (stacked combo)
         if lockedAnswers.count > 5 {
             errorMessage = "You can stack up to 5 picks per match"
             return false
         }
 
-        // Also check existing picks on this match + new picks don't exceed 5
         let existingPicksOnMatch = (try? await supabaseManager.fetchMyPicks())?.filter {
             $0.match == match.displayName
         }.count ?? 0
@@ -913,13 +920,13 @@ final class PredictViewModel: ObservableObject {
             errorMessage = "You can only have 5 picks per match"
             return false
         }
-        
+
         isSubmitting = true
         errorMessage = nil
         let comboId = isCombo ? UUID().uuidString : nil
         do {
             for answer in lockedAnswers {
-                let xp = match.isLive ? answer.liveXpValue() : answer.xpValue
+                let xp = effectiveXP(for: answer, isLive: match.isLive)
                 try await supabaseManager.createPick(
                     match:          match.displayName,
                     market:         answer.label,

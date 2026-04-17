@@ -158,7 +158,7 @@ final class LeagueViewModel: ObservableObject {
                 .insert([
                     "name":       newLeagueName.trimmingCharacters(in: .whitespaces),
                     "invite_code": code,
-                    "created_by": userId.uuidString.lowercased(),
+                    //"created_by": userId.uuidString.lowercased(),
                 ])
                 .select()
                 .single()
