@@ -878,6 +878,34 @@ app.post("/api/weekly-reset", requireAdmin, async(req,res)=>{
   catch(err){res.status(500).json({error:err.message});}
 });
 
+
+
+
+//---- SIGHT ENGINE 
+app.post('/api/check-name', async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'No name provided' });
+
+  try {
+    const response = await fetch('https://api.sightengine.com/1.0/text/check.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        text: name,
+        lang: 'en',
+        mode: 'standard',
+        api_user: process.env.SIGHTENGINE_USER,
+        api_secret: process.env.SIGHTENGINE_SECRET,
+      }),
+    });
+    const data = await response.json();
+    const hasProfanity = data.profanity?.matches?.length > 0;
+    res.json({ safe: !hasProfanity });
+  } catch {
+    res.json({ safe: true });
+  }
+});
+
 // ── CRONS ─────────────────────────────────────────────────────────────────────
 cron.schedule("*/20 * * * *", async()=>{
   try{

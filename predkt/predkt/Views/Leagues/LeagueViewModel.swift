@@ -1,6 +1,7 @@
 import Foundation
 import Supabase
 import Combine
+
 struct LeaderboardEntry: Identifiable, Decodable {
     let id: String
     let username: String
@@ -9,9 +10,9 @@ struct LeaderboardEntry: Identifiable, Decodable {
     let best_streak: Int?
     let current_streak: Int?
 
-    var displayXP: Int     { total_points ?? 0 }
-    var weeklyXP: Int      { weekly_points ?? 0 }
-    var streak: Int        { current_streak ?? 0 }
+    var displayXP: Int { total_points ?? 0 }
+    var weeklyXP: Int  { weekly_points ?? 0 }
+    var streak: Int    { current_streak ?? 0 }
 }
 
 struct League: Identifiable, Decodable {
@@ -44,7 +45,23 @@ final class LeagueViewModel: ObservableObject {
     @Published var joinCode         = ""
     @Published var actionMessage: String?
 
+    // Merged local + remote banned words — used by CreateLeagueSheet
+    @Published var bannedWords: Set<String> = []
+
     private let supabaseManager = SupabaseManager.shared
+
+    // Replace with your Railway base URL
+    private let backendURL = "https://your-railway-app.up.railway.app"
+
+    // Local list — instant, no network needed
+    private let localBannedWords: Set<String> = [
+        "fuck", "shit", "bitch", "asshole", "cunt", "dick", "pussy",
+        "nigger", "nigga", "faggot", "retard", "whore", "slut",
+        "bastard", "cock", "twat", "wanker",
+        "nazi", "hitler", "kkk", "isis", "isil", "jihad", "hamas",
+        "nonce", "pedo", "paedo", "paedophile", "pedophile",
+        "n1gger", "f4ggot", "p3do", "naz1"
+    ]
 
     // MARK: - Load All
 
@@ -54,8 +71,31 @@ final class LeagueViewModel: ObservableObject {
             group.addTask { await self.fetchGlobalLeaderboard() }
             group.addTask { await self.fetchWeeklyLeaderboard() }
             group.addTask { await self.fetchMyLeagues() }
+            group.addTask { await self.syncBannedWords() }
         }
         isLoading = false
+    }
+
+    // MARK: - Banned Words Sync
+
+    func syncBannedWords() async {
+        // Always start with the local list so validation works instantly
+        bannedWords = localBannedWords
+
+        do {
+            let response = try await supabaseManager.client
+                .from("banned_words")
+                .select("word")
+                .execute()
+            struct BannedWord: Decodable { let word: String }
+            let remote = try JSONDecoder().decode([BannedWord].self, from: response.data)
+            // Merge remote words into the set
+            bannedWords = bannedWords.union(remote.map { $0.word.lowercased() })
+            print("✅ Banned words synced — \(bannedWords.count) total")
+        } catch {
+            // Local list is already set — fail silently
+            print("⚠️ Could not sync remote banned words, using local list")
+        }
     }
 
     // MARK: - Leaderboards
@@ -93,7 +133,6 @@ final class LeagueViewModel: ObservableObject {
     func fetchMyLeagues() async {
         guard let userId = supabaseManager.user?.id else { return }
         do {
-            // Get league IDs the user is a member of
             let memberResponse = try await supabaseManager.client
                 .from("league_members")
                 .select("league_id")
@@ -106,7 +145,6 @@ final class LeagueViewModel: ObservableObject {
 
             guard !leagueIds.isEmpty else { myLeagues = []; return }
 
-            // Fetch full league details
             let leagueResponse = try await supabaseManager.client
                 .from("leagues")
                 .select("*")
@@ -145,10 +183,16 @@ final class LeagueViewModel: ObservableObject {
     // MARK: - Create League
 
     func createLeague() async {
-        guard !newLeagueName.trimmingCharacters(in: .whitespaces).isEmpty else {
-            actionMessage = "Enter a league name"; return
-        }
+        let name = newLeagueName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { actionMessage = "Enter a league name"; return }
         guard let userId = supabaseManager.user?.id else { return }
+
+        // API moderation check
+        let isSafe = await checkNameWithAPI(name)
+        guard isSafe else {
+            actionMessage = "That name was flagged — please choose another"
+            return
+        }
 
         let code = String((0..<6).map { _ in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".randomElement()! })
 
@@ -156,9 +200,8 @@ final class LeagueViewModel: ObservableObject {
             let response = try await supabaseManager.client
                 .from("leagues")
                 .insert([
-                    "name":       newLeagueName.trimmingCharacters(in: .whitespaces),
+                    "name":        name,
                     "invite_code": code,
-                    //"created_by": userId.uuidString.lowercased(),
                 ])
                 .select()
                 .single()
@@ -178,7 +221,7 @@ final class LeagueViewModel: ObservableObject {
 
             newLeagueName = ""
             showCreateLeague = false
-            actionMessage = "League created! Code: \(code)"
+            actionMessage = "Squad created! Code: \(code)"
             await fetchMyLeagues()
         } catch {
             actionMessage = "Failed to create: \(error.localizedDescription)"
@@ -193,7 +236,6 @@ final class LeagueViewModel: ObservableObject {
         guard let userId = supabaseManager.user?.id else { return }
 
         do {
-            // Find league by invite code
             let leagueResponse = try await supabaseManager.client
                 .from("leagues")
                 .select("id, name")
@@ -204,7 +246,6 @@ final class LeagueViewModel: ObservableObject {
             struct FoundLeague: Decodable { let id: String; let name: String }
             let league = try JSONDecoder().decode(FoundLeague.self, from: leagueResponse.data)
 
-            // Join
             try await supabaseManager.client
                 .from("league_members")
                 .insert([
@@ -215,10 +256,31 @@ final class LeagueViewModel: ObservableObject {
 
             joinCode = ""
             showJoinLeague = false
-            actionMessage = "Joined \(league.name)! 🎉"
+            actionMessage = "Joined \(league.name)!"
             await fetchMyLeagues()
         } catch {
             actionMessage = "Invalid code or already a member"
+        }
+    }
+
+    // MARK: - Name Moderation
+
+    private func checkNameWithAPI(_ name: String) async -> Bool {
+        guard let url = URL(string: "\(backendURL)/api/check-name") else { return true }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name])
+        request.timeoutInterval = 5
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let result = try JSONDecoder().decode([String: Bool].self, from: data)
+            return result["safe"] ?? true
+        } catch {
+            // Fail open — don't block users if the API is unreachable
+            print("⚠️ Name check unavailable: \(error.localizedDescription)")
+            return true
         }
     }
 }

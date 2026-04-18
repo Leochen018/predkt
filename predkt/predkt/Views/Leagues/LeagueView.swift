@@ -697,12 +697,7 @@ struct CreateLeagueSheet: View {
     // Only letters, numbers, spaces
     private let safePattern = "^[a-zA-Z0-9 ]*$"
 
-    // Basic blocklist — expand as needed
-    private let bannedWords: [String] = [
-        "fuck", "shit", "bitch", "asshole", "cunt", "dick", "pussy",
-        "nigger", "nigga", "faggot", "retard", "whore", "slut",
-        "bastard", "damn", "piss", "cock", "twat", "wanker"
-    ]
+    // Sourced from viewModel.bannedWords (local + Supabase remote, synced on launch)
 
     private let nameSuggestions: [String] = [
         "The Haaland Hurricanes", "Offside Outlaws", "The Messi Mob",
@@ -718,7 +713,7 @@ struct CreateLeagueSheet: View {
         if name.count < minLength { return .tooShort }
         if name.count > maxLength { return .tooLong }
         guard name.range(of: safePattern, options: .regularExpression) != nil else { return .invalidChars }
-        if bannedWords.contains(where: { name.lowercased().contains($0) }) { return .inappropriate }
+        if viewModel.bannedWords.contains(where: { name.lowercased().contains($0) }) { return .inappropriate }
         return .safe
     }
 
