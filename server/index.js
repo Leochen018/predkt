@@ -881,29 +881,32 @@ app.post("/api/weekly-reset", requireAdmin, async(req,res)=>{
 
 
 
-//---- SIGHT ENGINE 
+//---- Openai api key - check for banned words for create league 
 app.post('/api/check-name', async (req, res) => {
-  const { name } = req.body;
-  if (!name) return res.status(400).json({ error: 'No name provided' });
+    if (req.headers['x-predkt-secret'] !== process.env.PREDKT_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
 
-  try {
-    const response = await fetch('https://api.sightengine.com/1.0/text/check.json', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        text: name,
-        lang: 'en',
-        mode: 'standard',
-        api_user: process.env.SIGHTENGINE_USER,
-        api_secret: process.env.SIGHTENGINE_SECRET,
-      }),
-    });
-    const data = await response.json();
-    const hasProfanity = data.profanity?.matches?.length > 0;
-    res.json({ safe: !hasProfanity });
-  } catch {
-    res.json({ safe: true });
-  }
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'No name provided' });
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/moderations', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({ input: name }),
+        });
+
+        const data = await response.json();
+        const result = data.results[0];
+
+        res.json({ safe: !result.flagged });
+    } catch {
+        res.json({ safe: true });
+    }
 });
 
 // ── CRONS ─────────────────────────────────────────────────────────────────────
