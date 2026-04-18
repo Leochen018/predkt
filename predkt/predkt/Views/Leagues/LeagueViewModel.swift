@@ -202,6 +202,7 @@ final class LeagueViewModel: ObservableObject {
                 .insert([
                     "name":        name,
                     "invite_code": code,
+                    "created_by":  userId.uuidString.lowercased(),
                 ])
                 .select()
                 .single()
@@ -260,6 +261,48 @@ final class LeagueViewModel: ObservableObject {
             await fetchMyLeagues()
         } catch {
             actionMessage = "Invalid code or already a member"
+        }
+    }
+
+    // MARK: - Delete / Leave League
+
+    func deleteLeague(_ league: League) async {
+        do {
+            // Remove all members first
+            try await supabaseManager.client
+                .from("league_members")
+                .delete()
+                .eq("league_id", value: league.id)
+                .execute()
+
+            // Delete the league itself
+            try await supabaseManager.client
+                .from("leagues")
+                .delete()
+                .eq("id", value: league.id)
+                .execute()
+
+            myLeagues.removeAll { $0.id == league.id }
+            actionMessage = "Squad deleted"
+        } catch {
+            actionMessage = "Failed to delete: \(error.localizedDescription)"
+        }
+    }
+
+    func leaveLeague(_ league: League) async {
+        guard let userId = supabaseManager.user?.id else { return }
+        do {
+            try await supabaseManager.client
+                .from("league_members")
+                .delete()
+                .eq("league_id", value: league.id)
+                .eq("user_id", value: userId.uuidString.lowercased())
+                .execute()
+
+            myLeagues.removeAll { $0.id == league.id }
+            actionMessage = "Left \(league.name)"
+        } catch {
+            actionMessage = "Failed to leave: \(error.localizedDescription)"
         }
     }
 

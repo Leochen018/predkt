@@ -21,6 +21,8 @@ struct LeagueView: View {
     @State private var leagueInfoCache: [String: CachedLeagueInfo] = [:]
     @State private var publicTab = 0  // 0 = Trending (weekly), 1 = Global (all-time)
     @State private var showLeagueDetail = false
+    @State private var leagueToDelete: League?
+    @State private var leagueToLeave: League?
 
     private var currentUserId: String? {
         supabaseManager.user?.id.uuidString.lowercased()
@@ -71,6 +73,37 @@ struct LeagueView: View {
         }
         .sheet(isPresented: $viewModel.showCreateLeague) { CreateLeagueSheet(viewModel: viewModel) }
         .sheet(isPresented: $viewModel.showJoinLeague)   { JoinLeagueSheet(viewModel: viewModel) }
+        // Delete confirmation
+        .alert("Delete Squad", isPresented: Binding(
+            get: { leagueToDelete != nil },
+            set: { if !$0 { leagueToDelete = nil } }
+        )) {
+            Button("Delete", role: .destructive) {
+                if let league = leagueToDelete {
+                    Task { await viewModel.deleteLeague(league) }
+                }
+                leagueToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { leagueToDelete = nil }
+        } message: {
+            Text("This will permanently delete \"\(leagueToDelete?.name ?? "")\" and remove all members. This cannot be undone.")
+        }
+        // Leave confirmation
+        .alert("Leave Squad", isPresented: Binding(
+            get: { leagueToLeave != nil },
+            set: { if !$0 { leagueToLeave = nil } }
+        )) {
+            Button("Leave", role: .destructive) {
+                if let league = leagueToLeave {
+                    Task { await viewModel.leaveLeague(league) }
+                }
+                leagueToLeave = nil
+            }
+            Button("Cancel", role: .cancel) { leagueToLeave = nil }
+        } message: {
+            Text("You will be removed from \"\(leagueToLeave?.name ?? "")\". You can rejoin with the invite code.")
+        }
+        // General action message
         .alert("", isPresented: Binding(
             get: { viewModel.actionMessage != nil },
             set: { if !$0 { viewModel.actionMessage = nil } }
@@ -152,15 +185,19 @@ struct LeagueView: View {
 
             VStack(spacing: 10) {
                 ForEach(viewModel.myLeagues) { league in
+                    let isCreator = league.created_by == currentUserId
                     SquadCard(
                         league: league,
                         info: leagueInfoCache[league.id],
+                        isCreator: isCreator,
                         onTap: {
                             Task {
                                 await viewModel.fetchLeagueLeaderboard(for: league)
                                 showLeagueDetail = true
                             }
-                        }
+                        },
+                        onDelete: { leagueToDelete = league },
+                        onLeave:  { leagueToLeave  = league }
                     )
                 }
                 StartNewSquadCard(onCreateTap: { viewModel.showCreateLeague = true },
@@ -271,7 +308,10 @@ struct LeagueView: View {
 fileprivate struct SquadCard: View {
     let league: League
     let info: CachedLeagueInfo?
+    let isCreator: Bool
     let onTap: () -> Void
+    let onDelete: () -> Void
+    let onLeave: () -> Void
 
     private let icons = ["person.3.fill", "shield.fill", "star.fill", "bolt.fill", "flame.fill"]
     private var iconName: String { icons[abs(league.id.hashValue) % icons.count] }
@@ -352,6 +392,17 @@ fileprivate struct SquadCard: View {
             }
         }
         .buttonStyle(PlainButtonStyle())
+        .contextMenu {
+            if isCreator {
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete Squad", systemImage: "trash")
+                }
+            } else {
+                Button(role: .destructive, action: onLeave) {
+                    Label("Leave Squad", systemImage: "arrow.right.square")
+                }
+            }
+        }
     }
 }
 
