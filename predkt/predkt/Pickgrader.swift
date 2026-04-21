@@ -19,6 +19,20 @@ struct PickGrader {
         if market == "\(home) Win" { return won(h > a) }
         if market == "Draw"        { return won(h == a) }  // also covers Winning Margin draw
         if market == "\(away) Win" { return won(a > h) }
+        
+        // ── LEGACY / SHORT LABELS (old picks stored short labels) ───────────────
+        // "Home" means home team wins, "Away" means away team wins
+        if market == "Home" { return won(h > a) }
+        if market == "Away" { return won(a > h) }
+
+        // "X to win" format — extract team name and check
+        if market.hasSuffix(" to win") {
+            let team = String(market.dropLast(" to win".count))
+            if team == home { return won(h > a) }
+            if team == away { return won(a > h) }
+        }
+        
+        
 
         // ── DOUBLE CHANCE ────────────────────────────────────────────────────
         if market == "\(home) or Draw"  { return won(h >= a) }
