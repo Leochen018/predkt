@@ -145,8 +145,8 @@ async function apiFetch(path, params = {}) {
 
 async function fetchLeagueFixtures(leagueId) {
   const season = currentSeason();
-  const from   = dateStr(-1);
-  const to     = dateStr(30);
+  const from   = dateStr(-7);
+  const to     = dateStr(14);
   const fixtures = await apiFetch("/fixtures", { league: leagueId, season, from, to });
   console.log(`  League ${leagueId}: ${fixtures.length} fixtures`);
   return fixtures;
@@ -908,6 +908,17 @@ app.post('/api/check-name', async (req, res) => {
         res.json({ safe: true });
     }
 });
+//MY SQUAD - notify teammates to make a prediction
+app.post('/api/nudge', async (req, res) => {
+    if (req.headers['x-predkt-secret'] !== process.env.PREDKT_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const { userIds, title, body } = req.body;
+    // Fetch push tokens from Supabase, then send via APNs/FCM
+    // See push notification setup docs for your token sending logic
+    res.json({ sent: true });
+});
+
 
 // ── CRONS ─────────────────────────────────────────────────────────────────────
 cron.schedule("*/20 * * * *", async()=>{

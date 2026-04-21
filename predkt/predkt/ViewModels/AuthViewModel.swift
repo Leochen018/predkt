@@ -13,20 +13,37 @@ final class AuthViewModel: ObservableObject {
     @Published var isSignupMode = false
     @Published var showingOTPInput = false
 
-    private let supabaseManager = SupabaseManager.shared
+    // Step 2 — offline banner state (read by your views to show a banner)
+    @Published var isOffline = false
 
-    var isUserVerified: Bool {
-        return supabaseManager.user?.confirmedAt != nil
+    private let supabaseManager = SupabaseManager.shared
+    private let network = NetworkMonitor.shared
+    private var cancellables = Set<AnyCancellable>()
+
+    init() {
+        // Step 2 — watch network state so views can show an offline banner
+        network.$isConnected
+            .receive(on: RunLoop.main)
+            .sink { [weak self] connected in
+                self?.isOffline = !connected
+            }
+            .store(in: &cancellables)
     }
 
     // --- SIGNUP FLOW ---
-    
+
     func signup() async {
+        // Step 3 — offline guard: tell user immediately instead of waiting for a timeout
+        guard network.isConnected else {
+            errorMessage = "No connection — can't sign up right now"
+            return
+        }
+
         guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
             errorMessage = "Please choose a username."
             return
         }
-        
+
         isLoading = true
         errorMessage = nil
 
@@ -36,11 +53,11 @@ final class AuthViewModel: ObservableObject {
                 password: password,
                 username: username
             )
-            
+
             // Success: Switch to OTP input
             self.showingOTPInput = true
             self.errorMessage = "Code sent! Check your email."
-            
+
         } catch {
             errorMessage = error.localizedDescription
             print("DEBUG: Signup Error: \(error)")
@@ -52,7 +69,12 @@ final class AuthViewModel: ObservableObject {
     // --- OTP VERIFICATION FLOW ---
 
     func verifyOTP() async {
-        // UPDATED: Relaxed validation to support your 8-character alphanumeric code
+        // Step 3 — offline guard
+        guard network.isConnected else {
+            errorMessage = "No connection — can't verify right now"
+            return
+        }
+
         let trimmedCode = otpCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCode.isEmpty else {
             errorMessage = "Please enter the verification code."
@@ -63,19 +85,15 @@ final class AuthViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            // Pass the trimmed code to the manager
             try await supabaseManager.verifyCode(email: email, code: trimmedCode)
-            
+
             // On success, reset UI state
             self.showingOTPInput = false
             self.isSignupMode = false
             self.errorMessage = nil
-            
-            // Clear credentials after successful entry
             self.otpCode = ""
-            
+
         } catch {
-            // Friendly error for incorrect codes
             errorMessage = "Invalid or expired code. Please try again."
             print("DEBUG: OTP Error: \(error)")
         }
@@ -86,6 +104,12 @@ final class AuthViewModel: ObservableObject {
     // --- LOGIN & LOGOUT ---
 
     func login() async {
+        // Step 3 — offline guard
+        guard network.isConnected else {
+            errorMessage = "No connection — check your signal and try again"
+            return
+        }
+
         isLoading = true
         errorMessage = nil
         do {
@@ -97,10 +121,11 @@ final class AuthViewModel: ObservableObject {
     }
 
     func logout() async {
+        // Note: logout intentionally clears all fields — this is correct behaviour.
+        // No offline guard here: we clear local state regardless of connection.
         isLoading = true
         do {
             try await supabaseManager.logout()
-            // Reset all fields on logout
             email = ""
             password = ""
             username = ""

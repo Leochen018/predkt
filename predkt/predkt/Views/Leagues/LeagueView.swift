@@ -371,22 +371,43 @@ fileprivate struct SquadCard: View {
                 }
                 .frame(height: 172)
 
-                // Bottom: league name + rank
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(league.name)
-                        .font(.system(size: 17, weight: .black))
-                        .foregroundStyle(.white)
+                // Bottom: league name + rank + action button
+                HStack(alignment: .bottom) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(league.name)
+                            .font(.system(size: 17, weight: .black))
+                            .foregroundStyle(.white)
 
-                    if let info = info {
-                        let rankStr = info.userRank > 0 ? "\(info.userRank)" : "–"
-                        Text("RANK: \(rankStr) / \(info.memberCount) MEMBERS")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(Color.predktMuted).kerning(0.5)
-                    } else {
-                        Text("LOADING...")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(Color.predktMuted).kerning(0.5)
+                        if let info = info {
+                            let rankStr = info.userRank > 0 ? "\(info.userRank)" : "–"
+                            Text("RANK: \(rankStr) / \(info.memberCount) MEMBERS")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Color.predktMuted).kerning(0.5)
+                        } else {
+                            Text("LOADING...")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Color.predktMuted).kerning(0.5)
+                        }
                     }
+
+                    Spacer()
+
+                    // Physical delete / leave button
+                    Button(action: isCreator ? onDelete : onLeave) {
+                        HStack(spacing: 4) {
+                            Image(systemName: isCreator ? "trash" : "rectangle.portrait.and.arrow.right")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(isCreator ? "Delete" : "Leave")
+                                .font(.system(size: 10, weight: .black))
+                        }
+                        .foregroundStyle(Color(red: 1, green: 0.3, blue: 0.3))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color(red: 1, green: 0.3, blue: 0.3).opacity(0.1))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color(red: 1, green: 0.3, blue: 0.3).opacity(0.3), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
                 .padding(.horizontal, 16).padding(.bottom, 16)
             }
@@ -538,26 +559,35 @@ fileprivate struct RankingRow: View {
 struct LeagueDetailView: View {
     let league: League
     @ObservedObject var viewModel: LeagueViewModel
+    @EnvironmentObject var supabaseManager: SupabaseManager
     @Environment(\.dismiss) var dismiss
+
     @State private var codeCopied = false
+    @State private var selectedTab = 0  // 0 = Standings, 1 = Predictions
+    @State private var nudgeSent = false
+    @State private var nudgedMemberIds: Set<String> = []
 
     private var entries: [LeaderboardEntry] { viewModel.leagueLeaderboard }
+    private var currentUserId: String? { supabaseManager.user?.id.uuidString.lowercased() }
 
     var body: some View {
         ZStack {
             Color.predktBg.ignoresSafeArea()
             VStack(spacing: 0) {
+
+                // Header
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(league.name.uppercased())
                             .font(.system(size: 13, weight: .black))
                             .foregroundStyle(Color.predktMuted).kerning(2)
 
+                        // Copy invite code
                         Button(action: {
                             UIPasteboard.general.string = league.invite_code
                             withAnimation(.easeInOut(duration: 0.15)) { codeCopied = true }
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                withAnimation(.easeInOut(duration: 0.15)) { codeCopied = false }
+                                withAnimation { codeCopied = false }
                             }
                         }) {
                             HStack(spacing: 5) {
@@ -578,36 +608,259 @@ struct LeagueDetailView: View {
                         }
                         .buttonStyle(PlainButtonStyle())
                     }
+
                     Spacer()
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .bold)).foregroundStyle(Color.predktMuted)
-                            .padding(9).background(Color.white.opacity(0.07)).cornerRadius(8)
+
+                    HStack(spacing: 8) {
+                        // Nudge All button
+                        Button(action: {
+                            Task {
+                                await viewModel.nudgeAll(in: league)
+                                withAnimation { nudgeSent = true }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    withAnimation { nudgeSent = false }
+                                }
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: nudgeSent ? "checkmark" : "bell.fill")
+                                    .font(.system(size: 10))
+                                Text(nudgeSent ? "Sent!" : "Nudge All")
+                                    .font(.system(size: 10, weight: .black))
+                            }
+                            .foregroundStyle(nudgeSent ? Color.predktLime : .black)
+                            .padding(.horizontal, 10).padding(.vertical, 7)
+                            .background(nudgeSent ? Color.predktLime.opacity(0.15) : Color.predktLime)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .animation(.easeInOut(duration: 0.2), value: nudgeSent)
+
+                        // Dismiss
+                        Button(action: { dismiss() }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 13, weight: .bold)).foregroundStyle(Color.predktMuted)
+                                .padding(9).background(Color.white.opacity(0.07)).cornerRadius(8)
+                        }
                     }
                 }
                 .padding(20)
                 .background(Color.predktCard)
 
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        if entries.count >= 3 {
-                            PodiumView(entries: Array(entries.prefix(3)), currentUserId: nil)
-                                .padding(.top, 16).padding(.bottom, 4)
-                        }
-                        VStack(spacing: 6) {
-                            ForEach(Array(entries.enumerated()), id: \.element.id) { i, entry in
-                                LeaderboardRow(rank: i + 1, entry: entry, xp: entry.displayXP, isCurrentUser: false)
+                // Tab picker
+                HStack(spacing: 0) {
+                    ForEach(["STANDINGS", "PREDICTIONS"].indices, id: \.self) { i in
+                        Button(action: { withAnimation(.easeInOut(duration: 0.2)) { selectedTab = i } }) {
+                            VStack(spacing: 6) {
+                                Text(["STANDINGS", "PREDICTIONS"][i])
+                                    .font(.system(size: 12, weight: selectedTab == i ? .black : .medium))
+                                    .foregroundStyle(selectedTab == i ? .white : Color.predktMuted)
+                                    .kerning(0.5)
+                                Rectangle()
+                                    .fill(selectedTab == i ? Color.predktLime : Color.clear)
+                                    .frame(height: 2).cornerRadius(1)
                             }
+                            .padding(.vertical, 10)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, entries.count >= 3 ? 4 : 16)
-                        Spacer().frame(height: 40)
+                        .frame(maxWidth: .infinity)
                     }
                 }
+                .padding(.horizontal, 20)
+                .background(Color.predktCard.opacity(0.8))
+
+                // Tab content
+                TabView(selection: $selectedTab) {
+                    // STANDINGS tab
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            if entries.count >= 3 {
+                                PodiumView(entries: Array(entries.prefix(3)), currentUserId: currentUserId)
+                                    .padding(.top, 16).padding(.bottom, 4)
+                            }
+                            VStack(spacing: 6) {
+                                ForEach(Array(entries.enumerated()), id: \.element.id) { i, entry in
+                                    LeagueMemberRow(
+                                        rank: i + 1,
+                                        entry: entry,
+                                        isCurrentUser: entry.id == currentUserId,
+                                        nudgeSent: nudgedMemberIds.contains(entry.id),
+                                        onNudge: {
+                                            Task {
+                                                await viewModel.nudgeMember(entry, in: league)
+                                                nudgedMemberIds.insert(entry.id)
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, entries.count >= 3 ? 4 : 16)
+                            Spacer().frame(height: 40)
+                        }
+                    }
+                    .tag(0)
+
+                    // PREDICTIONS tab
+                    LeaguePredictionsTab(
+                        entries: entries,
+                        leagueActivity: viewModel.leagueActivity
+                    )
+                    .tag(1)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
             }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .task { await viewModel.fetchLeagueActivity(for: league) }
+    }
+}
+
+// MARK: - League Member Row (with nudge)
+
+fileprivate struct LeagueMemberRow: View {
+    let rank: Int
+    let entry: LeaderboardEntry
+    let isCurrentUser: Bool
+    let nudgeSent: Bool
+    let onNudge: () -> Void
+
+    var rankColor: Color {
+        if rank <= 3  { return Color.predktLime }
+        if rank <= 10 { return Color.predktAmber }
+        return Color.predktMuted
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("\(rank)")
+                .font(.system(size: 13, weight: .black))
+                .foregroundStyle(rankColor).frame(width: 28)
+
+            Circle().fill(rankColor.opacity(0.1)).frame(width: 36, height: 36)
+                .overlay(Text(String(entry.username.prefix(1)).uppercased())
+                    .font(.system(size: 14, weight: .black)).foregroundStyle(rankColor))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(entry.username)
+                        .font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                    if isCurrentUser {
+                        Text("YOU").font(.system(size: 8, weight: .black)).foregroundStyle(.black)
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color.predktLime).cornerRadius(4)
+                    }
+                }
+                if let streak = entry.current_streak, streak > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "flame.fill").font(.system(size: 9)).foregroundStyle(Color.predktAmber)
+                        Text("\(streak) streak").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.predktAmber)
+                    }
+                }
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("\(entry.displayXP)")
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundStyle(isCurrentUser ? Color.predktLime : .white)
+                Text("XP").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.predktMuted)
+            }
+
+            // Per-member nudge button — hidden for current user
+            if !isCurrentUser {
+                Button(action: onNudge) {
+                    Image(systemName: nudgeSent ? "checkmark" : "bell.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(nudgeSent ? Color.predktLime : Color.predktMuted)
+                        .padding(8)
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(8)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .animation(.easeInOut(duration: 0.2), value: nudgeSent)
+            }
+        }
+        .padding(12)
+        .background(isCurrentUser ? Color.predktLime.opacity(0.07) : Color.predktCard)
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(isCurrentUser ? Color.predktLime.opacity(0.3) : Color.predktBorder, lineWidth: 1))
+    }
+}
+
+// MARK: - League Predictions Tab
+
+fileprivate struct LeaguePredictionsTab: View {
+    let entries: [LeaderboardEntry]
+    let leagueActivity: [LeagueActivity]
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 0) {
+                if leagueActivity.isEmpty {
+                    VStack(spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 16).fill(Color.predktCard).frame(width: 64, height: 64)
+                            Image(systemName: "sportscourt").font(.system(size: 28)).foregroundStyle(Color.predktMuted)
+                        }
+                        Text("No predictions yet")
+                            .font(.system(size: 16, weight: .black)).foregroundStyle(.white)
+                        Text("When your squad makes predictions they'll appear here")
+                            .font(.system(size: 13)).foregroundStyle(Color.predktMuted)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 60).padding(.horizontal, 40)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(leagueActivity) { activity in
+                            ActivityRow(activity: activity)
+                            Divider().background(Color.predktBorder).padding(.horizontal, 16)
+                        }
+                    }
+                    .background(Color.predktCard)
+                    .cornerRadius(14)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.predktBorder, lineWidth: 1))
+                    .padding(.horizontal, 16).padding(.top, 16)
+                }
+                Spacer().frame(height: 40)
+            }
+        }
+    }
+}
+
+// MARK: - Activity Row
+
+fileprivate struct ActivityRow: View {
+    let activity: LeagueActivity
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color.predktLime.opacity(0.1))
+                .frame(width: 36, height: 36)
+                .overlay(Text(String(activity.username.prefix(1)).uppercased())
+                    .font(.system(size: 14, weight: .black)).foregroundStyle(Color.predktLime))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(activity.username)
+                        .font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                    Text("predicted on")
+                        .font(.system(size: 12)).foregroundStyle(Color.predktMuted)
+                }
+                Text(activity.matchName)
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.predktLime)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Text(activity.timeAgo)
+                .font(.system(size: 10)).foregroundStyle(Color.predktMuted)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
     }
 }
 

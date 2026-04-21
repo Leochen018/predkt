@@ -2,6 +2,26 @@ import Foundation
 import Supabase
 import Combine
 
+// MARK: - League Activity Model
+
+struct LeagueActivity: Identifiable {
+    let id: String
+    let userId: String
+    let username: String
+    let matchName: String
+    let createdAt: String
+
+    var timeAgo: String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: createdAt) else { return "" }
+        let diff = Int(Date().timeIntervalSince(date))
+        if diff < 3600  { return "\(diff / 60)m ago" }
+        if diff < 86400 { return "\(diff / 3600)h ago" }
+        return "\(diff / 86400)d ago"
+    }
+}
+
 struct LeaderboardEntry: Identifiable, Decodable {
     let id: String
     let username: String
@@ -48,10 +68,14 @@ final class LeagueViewModel: ObservableObject {
     // Merged local + remote banned words — used by CreateLeagueSheet
     @Published var bannedWords: Set<String> = []
 
+    // League activity feed (predictions tab)
+    @Published var leagueActivity: [LeagueActivity] = []
+
     private let supabaseManager = SupabaseManager.shared
 
-    // Replace with your Railway base URL
-    private let backendURL = "https://your-railway-app.up.railway.app"
+    // Replace with your Railway base URL and shared secret
+    private let backendURL   = "https://your-railway-app.up.railway.app"
+    private let nudgeSecret  = "your-predkt-secret-here"
 
     // Local list — instant, no network needed
     private let localBannedWords: Set<String> = [
@@ -303,6 +327,84 @@ final class LeagueViewModel: ObservableObject {
             actionMessage = "Left \(league.name)"
         } catch {
             actionMessage = "Failed to leave: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Nudge
+
+    func nudgeAll(in league: League) async {
+        let memberIds = leagueLeaderboard.map { $0.id }
+        guard !memberIds.isEmpty else { return }
+        await sendNudge(
+            toUserIds: memberIds,
+            title: "\(league.name) is waiting",
+            body: "Your squad is predicting — get your picks in before kick-off!"
+        )
+    }
+
+    func nudgeMember(_ member: LeaderboardEntry, in league: League) async {
+        await sendNudge(
+            toUserIds: [member.id],
+            title: "Your squad needs you",
+            body: "Make your predictions for \(league.name) before it's too late!"
+        )
+    }
+
+    private func sendNudge(toUserIds userIds: [String], title: String, body: String) async {
+        guard let url = URL(string: "\(backendURL)/api/nudge") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(nudgeSecret, forHTTPHeaderField: "x-predkt-secret")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "userIds": userIds,
+            "title":   title,
+            "body":    body
+        ])
+        request.timeoutInterval = 5
+        do {
+            let (_, _) = try await URLSession.shared.data(for: request)
+        } catch {
+            print("⚠️ Nudge failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - League Activity (Predictions tab)
+
+    func fetchLeagueActivity(for league: League) async {
+        let memberIds = leagueLeaderboard.map { $0.id }
+        guard !memberIds.isEmpty else { leagueActivity = []; return }
+
+        do {
+            // Adjust column names to match your actual plays/predictions table
+            let response = try await supabaseManager.client
+                .from("plays")
+                .select("user_id, match_name, created_at, profiles(username)")
+                .in("user_id", values: memberIds)
+                .order("created_at", ascending: false)
+                .limit(50)
+                .execute()
+
+            struct PlayRow: Decodable {
+                let user_id: String
+                let match_name: String
+                let created_at: String
+                struct Profile: Decodable { let username: String }
+                let profiles: Profile?
+            }
+            let rows = try JSONDecoder().decode([PlayRow].self, from: response.data)
+            leagueActivity = rows.map { row in
+                LeagueActivity(
+                    id: "\(row.user_id)-\(row.created_at)",
+                    userId: row.user_id,
+                    username: row.profiles?.username ?? "Player",
+                    matchName: row.match_name,
+                    createdAt: row.created_at
+                )
+            }
+        } catch {
+            print("⚠️ Activity fetch failed: \(error.localizedDescription)")
+            leagueActivity = []
         }
     }
 
