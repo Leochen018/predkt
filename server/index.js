@@ -294,67 +294,85 @@ function mapFixture(f, odds=null) {
 }
 
 // ── BUILD MATCH LIST ──────────────────────────────────────────────────────────
+let isBuildingMatchList = false;
+
 async function buildMatchList() {
   if (!matchCache.isStale()) {
     console.log(`⚡ Cache hit (${matchCache.data.length} matches)`);
     return matchCache.data;
   }
 
-  const season = currentSeason();
-  console.log(`🔄 Building for season=${season}...`);
-
-  const leagueResults = [];
-for (let i = 0; i < LEAGUE_IDS.length; i += 4) {
-    const batch = await Promise.all(
-        LEAGUE_IDS.slice(i, i + 4).map(id => fetchLeagueFixtures(id))
-    );
-    leagueResults.push(...batch);
-    if (i + 4 < LEAGUE_IDS.length) {
-        await new Promise(r => setTimeout(r, 3000)); // 3s between batches
-    }
-}
-
- console.log(`🔴 Skipping global live fetch — only showing TOP_LEAGUES`);
-
-const seen   = new Set();
-const unique = [...leagueResults.flat()].filter(f => {
-
-    if (seen.has(f.fixture.id)) return false;
-    seen.add(f.fixture.id); return true;
-  });
-
-  const days = [...new Set(unique.map(f=>f.fixture.date.slice(0,10)))].sort();
-  console.log(`📋 ${unique.length} fixtures across ${days.length} days: ${days[0]} → ${days[days.length-1]}`);
-
-  if (unique.length === 0) {
-    console.error("❌ 0 fixtures — API limit hit");
+  if (isBuildingMatchList) {
+    console.log("⏳ Cache build in progress, waiting...");
+    await new Promise(r => setTimeout(r, 8000));
     return matchCache.data || [];
   }
 
-  const cutoff   = new Date(); cutoff.setDate(cutoff.getDate() + 7);
-  const upcoming = unique.filter(f =>
-    !LIVE_STATUSES.includes(f.fixture.status.short) &&
-    !FINISH_STATUSES.includes(f.fixture.status.short) &&
-    new Date(f.fixture.date) <= cutoff
-  );
-  const skipped = unique.length - upcoming.length;
-  console.log(`🎰 Fetching odds for ${upcoming.length} fixtures (skipping ${skipped})`);
+  isBuildingMatchList = true;
 
-  const oddsResults = [];
-  for (let i=0; i<upcoming.length; i+=6) {
-    const batch = await Promise.all(upcoming.slice(i,i+6).map(f=>fetchOddsForId(f.fixture.id)));
-    oddsResults.push(...batch);
-    if (i+6<upcoming.length) await new Promise(r=>setTimeout(r,2000)); // 2s between batches
-  }
+  const season = currentSeason();
+  console.log(`🔄 Building for season=${season}...`);
 
-  const upcomingMap  = new Map(upcoming.map((f,i) => [f.fixture.id, oddsResults[i]]));
-  const liveMatches  = unique
-    .map(f => mapFixture(f, upcomingMap.get(f.fixture.id) ?? null))
-    .sort((a,b) => new Date(a.date)-new Date(b.date));
+  try {
+    const leagueResults = [];
+    for (let i = 0; i < LEAGUE_IDS.length; i += 4) {
+      const batch = await Promise.all(
+        LEAGUE_IDS.slice(i, i + 4).map(id => fetchLeagueFixtures(id))
+      );
+      leagueResults.push(...batch);
+      if (i + 4 < LEAGUE_IDS.length) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
 
+    console.log(`🔴 Skipping global live fetch — only showing TOP_LEAGUES`);
+
+    const seen = new Set();
+    const unique = [...leagueResults.flat()].filter(f => {
+      if (seen.has(f.fixture.id)) return false;
+      seen.add(f.fixture.id); return true;
+    });
+
+    const days = [...new Set(unique.map(f => f.fixture.date.slice(0, 10)))].sort();
+    console.log(`📋 ${unique.length} fixtures across ${days.length} days: ${days[0]} → ${days[days.length - 1]}`);
+
+    if (unique.length === 0) {
+      console.error("❌ 0 fixtures — API limit hit");
+      return matchCache.data || [];
+    }
+
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() + 7);
+    const upcoming = unique.filter(f =>
+      !LIVE_STATUSES.includes(f.fixture.status.short) &&
+      !FINISH_STATUSES.includes(f.fixture.status.short) &&
+      new Date(f.fixture.date) <= cutoff
+    );
+    const skipped = unique.length - upcoming.length;
+    console.log(`🎰 Fetching odds for ${upcoming.length} fixtures (skipping ${skipped})`);
+
+    const oddsResults = [];
+    for (let i = 0; i < upcoming.length; i += 6) {
+      const batch = await Promise.all(upcoming.slice(i, i + 6).map(f => fetchOddsForId(f.fixture.id)));
+      oddsResults.push(...batch);
+      if (i + 6 < upcoming.length) await new Promise(r => setTimeout(r, 2000));
+    }
+
+    const upcomingMap = new Map(upcoming.map((f, i) => [f.fixture.id, oddsResults[i]]));
+    const liveMatches = unique
+      .map(f => mapFixture(f, upcomingMap.get(f.fixture.id) ?? null))
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    if (liveMatches.length > 50) {
   matchCache.set(liveMatches);
-  return liveMatches;
+} else {
+  console.warn(`⚠️ Only ${liveMatches.length} matches built — keeping old cache`);
 }
+return matchCache.data;
+  } finally {
+    isBuildingMatchList = false;
+  }
+}
+
 
 // ── AUTO-RESOLVE ──────────────────────────────────────────────────────────────
 function evaluatePick(market, fixture) {
@@ -851,12 +869,13 @@ app.post("/api/refresh-cache", requireAdmin, async(req,res)=>{
   catch(err){res.status(500).json({error:err.message});}
 });
 
-app.post("/api/auto-resolve", async(req,res)=>{
-  try{
-    const f=await apiFetch("/fixtures",{status:"FT",last:30});
-    let t=0; for(const x of f){t+=await resolvePicksForMatch(x);}
-    res.json({ok:true,resolved:t});
-  }catch(err){res.status(500).json({error:err.message});}
+app.post("/api/auto-resolve", async (req, res) => {
+  try {
+    const f = await apiFetch("/fixtures", { status: "FT", from: dateStr(-7), to: dateStr(0) });
+    let t = 0;
+    for (const x of f) { t += await resolvePicksForMatch(x); }
+    res.json({ ok: true, resolved: t });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post("/api/resolve", requireAdmin, async(req,res)=>{
@@ -921,12 +940,13 @@ app.post('/api/nudge', async (req, res) => {
 
 
 // ── CRONS ─────────────────────────────────────────────────────────────────────
-cron.schedule("*/20 * * * *", async()=>{
-  try{
-    const f=await apiFetch("/fixtures",{status:"FT",last:20});
-    let t=0; for(const x of f){t+=await resolvePicksForMatch(x);}
-    if(t>0) console.log(`⏰ Resolved ${t}`);
-  }catch(err){console.error("❌ Auto-resolve:",err.message);}
+cron.schedule("*/20 * * * *", async () => {
+  try {
+    const f = await apiFetch("/fixtures", { status: "FT", from: dateStr(-7), to: dateStr(0) });
+    let t = 0;
+    for (const x of f) { t += await resolvePicksForMatch(x); }
+    if (t > 0) console.log(`⏰ Resolved ${t}`);
+  } catch (err) { console.error("❌ Auto-resolve:", err.message); }
 });
 
 cron.schedule("0 */2 * * *", async()=>{
