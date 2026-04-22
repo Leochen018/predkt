@@ -252,7 +252,7 @@ async function fetchGoalEvents(fixtureId) {
             lastScorer:  scorerOrder[scorerOrder.length - 1] ?? null,
         };
     } catch (err) {
-        console.warn(`⚠️ fetchGoalEvents ${fixtureId}:`, err.message);
+        console.warn(` fetchGoalEvents ${fixtureId}:`, err.message);
         return { counts: {}, firstScorer: null, lastScorer: null };
     }
 }
@@ -375,34 +375,75 @@ return matchCache.data;
 
 
 // ── AUTO-RESOLVE ──────────────────────────────────────────────────────────────
-function evaluatePick(market, fixture) {
-  const home=fixture.teams.home.name, away=fixture.teams.away.name;
-  const hg=fixture.goals.home??0, ag=fixture.goals.away??0, total=hg+ag;
-  const htH=fixture.score?.halftime?.home??0, htA=fixture.score?.halftime?.away??0;
-  if (!FINISH_STATUSES.includes(fixture.fixture.status.short)) return null;
-  const m=market.toLowerCase();
-  if(m===`${home.toLowerCase()} win`) return hg>ag?"correct":"wrong";
-  if(m==="draw") return hg===ag?"correct":"wrong";
-  if(m===`${away.toLowerCase()} win`) return ag>hg?"correct":"wrong";
-  if(m.includes("or draw")&&m.includes(home.toLowerCase())) return hg>=ag?"correct":"wrong";
-  if(m.includes("or draw")&&m.includes(away.toLowerCase())) return ag>=hg?"correct":"wrong";
-  const under=m.match(/(?:under|0-) (\d+)/); if(under) return total<parseInt(under[1])?"correct":"wrong";
-  const over=m.match(/(\d+)\+/); if(over) return total>=parseInt(over[1])?"correct":"wrong";
-  const exact=m.match(/exactly (\d+)/); if(exact) return total===parseInt(exact[1])?"correct":"wrong";
-  if(m==="no goals") return total===0?"correct":"wrong";
-  if(m.startsWith("yes")&&m.includes("both")) return hg>0&&ag>0?"correct":"wrong";
-  if(m.startsWith("no")&&m.includes("blank")) return hg===0||ag===0?"correct":"wrong";
-  if(m.includes("leading")&&m.includes(home.toLowerCase())) return htH>htA?"correct":"wrong";
-  if(m.includes("level at")) return htH===htA?"correct":"wrong";
-  if(m.includes("leading")&&m.includes(away.toLowerCase())) return htA>htH?"correct":"wrong";
-  if(m.includes("clean sheet")&&m.includes(home.toLowerCase())) return ag===0?"correct":"wrong";
-  if(m.includes("clean sheet")&&m.includes(away.toLowerCase())) return hg===0?"correct":"wrong";
-  const score=m.match(/^(\d+)-(\d+)$/); if(score) return parseInt(score[1])===hg&&parseInt(score[2])===ag?"correct":"wrong";
-  if(m==="goals odd") return total%2!==0?"correct":"wrong";
-  if(m==="goals even") return total%2===0?"correct":"wrong";
+function evaluatePick(market, fixture, allowHT = false) {
+  const home = fixture.teams.home.name, away = fixture.teams.away.name;
+  const hg = fixture.goals.home ?? 0, ag = fixture.goals.away ?? 0, total = hg + ag;
+  const htH = fixture.score?.halftime?.home ?? 0, htA = fixture.score?.halftime?.away ?? 0;
+  const status = fixture.fixture.status.short;
+  const isFT = FINISH_STATUSES.includes(status);
+  const isHT = status === 'HT';
+
+  if (!isFT && !(allowHT && isHT)) return null;
+
+  const m = market.toLowerCase();
+
+  // HT correct score: "HT: 1-0" or "HT: 1:0"
+  const htScore = m.match(/^ht:\s*(\d+)[:\-](\d+)$/);
+  if (htScore) return parseInt(htScore[1]) === htH && parseInt(htScore[2]) === htA ? "correct" : "wrong";
+
+  // 2H correct score: "2H: 2-1" or "2H: 2:1" (FT only)
+  const shScore = m.match(/^2h:\s*(\d+)[:\-](\d+)$/);
+  if (shScore && isFT) {
+    const sh_h = hg - htH, sh_a = ag - htA;
+    return parseInt(shScore[1]) === sh_h && parseInt(shScore[2]) === sh_a ? "correct" : "wrong";
+  }
+
+  // HT result markets — grade at both HT and FT
+  if (m.includes("lead at ht") || (m.includes("leading") && m.includes("half"))) {
+    if (m.includes(home.toLowerCase())) return htH > htA ? "correct" : "wrong";
+    if (m.includes(away.toLowerCase())) return htA > htH ? "correct" : "wrong";
+  }
+  if (m.includes("level at half") || m.includes("level at ht")) return htH === htA ? "correct" : "wrong";
+
+  // Stop here if grading at HT — don't grade FT markets mid-game
+  if (isHT) return null;
+
+  // ── FT markets ────────────────────────────────────────────────────────────
+  if (m === `${home.toLowerCase()} win`) return hg > ag ? "correct" : "wrong";
+  if (m === "draw") return hg === ag ? "correct" : "wrong";
+  if (m === `${away.toLowerCase()} win`) return ag > hg ? "correct" : "wrong";
+  if (m.includes("or draw") && m.includes(home.toLowerCase())) return hg >= ag ? "correct" : "wrong";
+  if (m.includes("or draw") && m.includes(away.toLowerCase())) return ag >= hg ? "correct" : "wrong";
+  const under = m.match(/under (\d+\.?\d*) goals/); if (under) return total < parseFloat(under[1]) ? "correct" : "wrong";
+  const over  = m.match(/over (\d+\.?\d*) goals/);  if (over)  return total > parseFloat(over[1])  ? "correct" : "wrong";
+  const exact = m.match(/exactly (\d+)/); if (exact) return total === parseInt(exact[1]) ? "correct" : "wrong";
+  if (m === "no goals (0)") return total === 0 ? "correct" : "wrong";
+  if (m.startsWith("yes") && m.includes("both")) return hg > 0 && ag > 0 ? "correct" : "wrong";
+  if (m.startsWith("no")  && m.includes("blank")) return hg === 0 || ag === 0 ? "correct" : "wrong";
+  if (m.includes("clean sheet") && m.includes(home.toLowerCase())) return ag === 0 ? "correct" : "wrong";
+  if (m.includes("clean sheet") && m.includes(away.toLowerCase())) return hg === 0 ? "correct" : "wrong";
+  const score = m.match(/^(\d+)-(\d+)$/); if (score) return parseInt(score[1]) === hg && parseInt(score[2]) === ag ? "correct" : "wrong";
+  if (m.includes("odd")  && m.includes("goal")) return total % 2 !== 0 ? "correct" : "wrong";
+  if (m.includes("even") && m.includes("goal")) return total % 2 === 0 ? "correct" : "wrong";
+
+  // Win to nil
+  if (m.includes("win") && m.includes("clean sheet") && m.includes(home.toLowerCase())) return hg > ag && ag === 0 ? "correct" : "wrong";
+  if (m.includes("win") && m.includes("clean sheet") && m.includes(away.toLowerCase())) return ag > hg && hg === 0 ? "correct" : "wrong";
+
+  // Winning margin
+  const marginH = m.match(new RegExp(`${home.toLowerCase()} win by (\\d+)(\\+)?`));
+  if (marginH) {
+    const n = parseInt(marginH[1]);
+    return marginH[2] ? (hg - ag >= n ? "correct" : "wrong") : (hg - ag === n ? "correct" : "wrong");
+  }
+  const marginA = m.match(new RegExp(`${away.toLowerCase()} win by (\\d+)(\\+)?`));
+  if (marginA) {
+    const n = parseInt(marginA[1]);
+    return marginA[2] ? (ag - hg >= n ? "correct" : "wrong") : (ag - hg === n ? "correct" : "wrong");
+  }
+
   return null;
 }
-
 
 async function resolveCombo(comboId) {
   const { data: allLegs } = await supabaseAdmin
@@ -550,7 +591,7 @@ async function resolvePlayerGoalPicks(fixtureId, pendingPicks, profileCache) {
 }
 
 
-async function resolvePicksForMatch(fixture) {
+async function resolvePicksForMatch(fixture, allowHT = false) {
     const { data: picks } = await supabaseAdmin
         .from("picks").select("*").eq("result", "pending")
         .ilike("match", `%${fixture.teams.home.name}%`);
@@ -558,12 +599,12 @@ async function resolvePicksForMatch(fixture) {
 
     let resolved = 0;
     const comboIdsToCheck = new Set();
-    const profileCache    = {};   // avoid re-fetching same profile multiple times
+    const profileCache    = {};
 
     // ── Pass 1: standard market resolution ───────────────────────────────────
     for (const pick of picks) {
         if (!pick.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase())) continue;
-        const result = evaluatePick(pick.market, fixture);
+        const result = evaluatePick(pick.market, fixture, allowHT);  // <-- pass allowHT
         if (!result) continue;
 
         const prob = pick.probability || Math.min(99, Math.max(1, Math.round(100.0 / (pick.odds || 2.0))));
@@ -593,22 +634,24 @@ async function resolvePicksForMatch(fixture) {
         if (pick.combo_id) comboIdsToCheck.add(pick.combo_id);
     }
 
-    // ── Pass 2: player goalscorer resolution (needs events endpoint) ──────────
-    const { data: stillPending } = await supabaseAdmin
-        .from("picks").select("*").eq("result", "pending")
-        .ilike("match", `%${fixture.teams.home.name}%`);
+    // ── Pass 2: player goalscorer resolution (FT only) ────────────────────────
+    if (!allowHT) {
+        const { data: stillPending } = await supabaseAdmin
+            .from("picks").select("*").eq("result", "pending")
+            .ilike("match", `%${fixture.teams.home.name}%`);
 
-    const playerPicks = (stillPending || []).filter(p =>
-        p.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase()) &&
-        /\((anytime|1st goal|last goal|2\+ goals|hat-trick)\)/i.test(p.market)
-    );
-
-    if (playerPicks.length > 0) {
-        const playerResolved = await resolvePlayerGoalPicks(
-            fixture.fixture.id, playerPicks, profileCache
+        const playerPicks = (stillPending || []).filter(p =>
+            p.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase()) &&
+            /\((anytime|1st goal|last goal|2\+ goals|hat-trick)\)/i.test(p.market)
         );
-        resolved += playerResolved;
-        playerPicks.forEach(p => { if (p.combo_id) comboIdsToCheck.add(p.combo_id); });
+
+        if (playerPicks.length > 0) {
+            const playerResolved = await resolvePlayerGoalPicks(
+                fixture.fixture.id, playerPicks, profileCache
+            );
+            resolved += playerResolved;
+            playerPicks.forEach(p => { if (p.combo_id) comboIdsToCheck.add(p.combo_id); });
+        }
     }
 
     // ── Pass 3: combo partial credit ─────────────────────────────────────────
@@ -942,11 +985,18 @@ app.post('/api/nudge', async (req, res) => {
 // ── CRONS ─────────────────────────────────────────────────────────────────────
 cron.schedule("*/20 * * * *", async () => {
   try {
-    const f = await apiFetch("/fixtures", { status: "FT", from: dateStr(-7), to: dateStr(0) });
     let t = 0;
-    for (const x of f) { t += await resolvePicksForMatch(x); }
-    if (t > 0) console.log(`⏰ Resolved ${t}`);
-  } catch (err) { console.error("❌ Auto-resolve:", err.message); }
+
+    // Grade finished matches
+    const ftFixtures = await apiFetch("/fixtures", { status: "FT", from: dateStr(-7), to: dateStr(0) });
+    for (const x of ftFixtures) { t += await resolvePicksForMatch(x, false); }
+
+    // Grade first-half markets for matches currently at half time
+    const htFixtures = await apiFetch("/fixtures", { status: "HT" });
+    for (const x of htFixtures) { t += await resolvePicksForMatch(x, true); }
+
+    if (t > 0) console.log(` Resolved ${t}`);
+  } catch (err) { console.error(" Auto-resolve:", err.message); }
 });
 
 cron.schedule("0 */2 * * *", async()=>{

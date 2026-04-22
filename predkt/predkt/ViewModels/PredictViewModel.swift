@@ -125,22 +125,29 @@ final class PredictViewModel: ObservableObject {
 
     // MARK: - Navigation
 
-    func goToNextDay() {
-        let next = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
-        selectedDate = next
-        scheduleRegroup()
-        APIManager.prefetchOdds(for: matchesForDate(next))
-    }
-
     func goToPreviousDay() {
-        let today = Calendar.current.startOfDay(for: Date())
-        let prev  = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
-        guard prev >= today else { return }
+        let sevenDaysAgo = Calendar.current.date(
+            byAdding: .day, value: -7,
+            to: Calendar.current.startOfDay(for: Date())
+        )!
+        let prev = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
+        guard prev >= sevenDaysAgo else { return }
         selectedDate = prev
         scheduleRegroup()
         APIManager.prefetchOdds(for: matchesForDate(prev))
     }
 
+    func goToNextDay() {
+        let twoWeeksAhead = Calendar.current.date(
+            byAdding: .day, value: 14,
+            to: Calendar.current.startOfDay(for: Date())
+        )!
+        let next = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
+        guard next <= twoWeeksAhead else { return }
+        selectedDate = next
+        scheduleRegroup()
+        APIManager.prefetchOdds(for: matchesForDate(next))
+    }
     // MARK: - Date Helpers
 
     private static let localDateFormatter: DateFormatter = {
@@ -413,7 +420,7 @@ final class PredictViewModel: ObservableObject {
 
         matchesLoaded = false
         isLoading = true
-        errorMessage = nil  
+        errorMessage = nil
         // DO NOT clear matches here — only clear after a successful fetch
         // so users see old data during the refresh rather than a blank screen
 
@@ -516,13 +523,15 @@ final class PredictViewModel: ObservableObject {
             return Answer(label, short: short, odds: odd, group: group)
         }
         func ans(_ items: [Answer?]) -> [Answer] { items.compactMap { $0 } }
-        func players(_ list: [PlayerOdd]?, grp: String, limit: Int = 14) -> [Answer] {
+        
+        func players(_ list: [PlayerOdd]?, grp: String, suffix: String = "", limit: Int = 14) -> [Answer] {
             guard let list = list else { return [] }
             let sorted = list.sorted { $0.odd < $1.odd }
             return sorted.prefix(limit).compactMap { p in
                 guard p.odd > 1, !p.name.isEmpty else { return nil }
                 let shortName = p.name.components(separatedBy: " ").last ?? p.name
-                return Answer(p.name, short: shortName, odds: p.odd, group: "\(grp)_\(p.name)")
+                let label = suffix.isEmpty ? p.name : "\(p.name) (\(suffix))"
+                return Answer(label, short: shortName, odds: p.odd, group: "\(grp)_\(p.name)")
             }
         }
 
@@ -788,19 +797,19 @@ final class PredictViewModel: ObservableObject {
 
         // ── 8. PLAYER PROPS ───────────────────────────────────────────────────
 
-        let any = players(o?.playerAnytime, grp: "any")
+        let any = players(o?.playerAnytime, grp: "any", suffix: "anytime")
         if !any.isEmpty { q.append(Question(category: "ANYTIME GOALSCORER", prompt: "Which player scores at any point?", icon: "person.fill.checkmark", answers: any)) }
 
-        let first = players(o?.playerFirstGoal, grp: "first")
+        let first = players(o?.playerFirstGoal, grp: "first", suffix: "1st goal")
         if !first.isEmpty { q.append(Question(category: "FIRST GOALSCORER", prompt: "Who opens the scoring?", icon: "1.circle.fill", answers: first)) }
 
-        let last = players(o?.playerLastGoal, grp: "last")
+        let last = players(o?.playerLastGoal, grp: "last", suffix: "last goal")
         if !last.isEmpty { q.append(Question(category: "LAST GOALSCORER", prompt: "Who scores the final goal?", icon: "flag.checkered", answers: last)) }
 
-        let score2 = players(o?.playerToBeScored2, grp: "score2")
+        let score2 = players(o?.playerToBeScored2, grp: "score2", suffix: "2+ goals")
         if !score2.isEmpty { q.append(Question(category: "PLAYER TO SCORE 2+", prompt: "Who scores a brace or more?", icon: "2.circle.fill", answers: score2)) }
 
-        let hat = players(o?.playerHatTrick, grp: "hattrick")
+        let hat = players(o?.playerHatTrick, grp: "hattrick", suffix: "hat-trick")
         if !hat.isEmpty { q.append(Question(category: "PLAYER TO SCORE HAT-TRICK", prompt: "Who completes a hat-trick?", icon: "3.circle.fill", answers: hat)) }
 
         let assist = players(o?.playerToAssist, grp: "assist")

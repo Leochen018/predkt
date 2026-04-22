@@ -171,8 +171,8 @@ private struct DateCarousel: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(0..<60, id: \.self) { i in
-                        let date = Calendar.current.date(byAdding: .day, value: i,
+                    ForEach(0..<22, id: \.self) { i in
+                        let date = Calendar.current.date(byAdding: .day, value: i - 7,
                             to: Calendar.current.startOfDay(for: Date())) ?? Date()
                         let isSelected = Calendar.current.isDate(date, inSameDayAs: selectedDate)
                         let hasMatches = matchesLoaded && datesWithMatches.contains(Self.localFmt.string(from: date))
@@ -185,8 +185,9 @@ private struct DateCarousel: View {
             .onChange(of: selectedDate) {
                 let today = Calendar.current.startOfDay(for: Date())
                 let days = Calendar.current.dateComponents([.day], from: today, to: selectedDate).day ?? 0
+                let index = max(0, min(days + 7, 21))
                 withAnimation(.easeInOut(duration: 0.25)) {
-                    proxy.scrollTo(max(0, min(days, 59)), anchor: .center)
+                    proxy.scrollTo(index, anchor: .center)
                 }
             }
         }
