@@ -35,7 +35,6 @@ function setCachedOdds(id, odds) { oddsCache.set(id, { odds, cachedAt: Date.now(
 
 // ── SCORING ───────────────────────────────────────────────────────────────────
 function calcPointsWin(p)       { return Math.max(1, 10 + (100 - Math.min(99, Math.max(1, parseInt(p)||50)))); }
-function calcPointsLoss(p)      { return Math.max(1, Math.round(calcPointsWin(p)/2)); }
 function getStreakMultiplier(s) { return Math.min(1.0 + Math.max(0, parseInt(s)||0) * 0.1, 2.0); }
 function getDailyBonus(d)       { return (parseInt(d)||0) >= 2 ? 1.2 : 1.0; }
 function updateDailyStreak(p) {
@@ -231,30 +230,60 @@ async function fetchOddsForId(fixtureId) {
   }
 }
 
+async function fetchStatistics(fixtureId) {
+  try {
+    const stats = await apiFetch("/fixtures/statistics", { fixture: fixtureId });
+    let corners = 0, shots = 0;
+    for (const teamStats of stats) {
+      for (const s of teamStats.statistics) {
+        if (s.type === "Corner Kicks") corners += parseInt(s.value) || 0;
+        if (s.type === "Total Shots")  shots   += parseInt(s.value) || 0;
+      }
+    }
+    return { corners, shots };
+  } catch (err) {
+    console.warn(`⚠️ fetchStatistics ${fixtureId}:`, err.message);
+    return { corners: null, shots: null };
+  }
+}
+
 // ── GOAL EVENTS ───────────────────────────────────────────────────────────────
 async function fetchGoalEvents(fixtureId) {
-    try {
-        const events = await apiFetch("/fixtures/events", { fixture: fixtureId });
-        const counts = {};       // { "Erling Haaland": 2 }
-        const scorerOrder = [];  // first → last goal scorer (name, in order)
+  try {
+    const events = await apiFetch("/fixtures/events", { fixture: fixtureId });
+    const counts = {};
+    const scorerOrder = [];
+    const teamScorerOrder = [];
+    const cardedPlayers = [];
 
-        for (const e of events) {
-            if (e.type !== "Goal" || e.detail === "Own Goal" || e.detail === "Penalty Missed") continue;
-            const name = e.player?.name;
-            if (!name) continue;
-            counts[name] = (counts[name] || 0) + 1;
-            scorerOrder.push(name);
+    for (const e of events) {
+      if (e.type === "Goal" && e.detail !== "Own Goal" && e.detail !== "Penalty Missed") {
+        const name = e.player?.name;
+        const team = e.team?.name;
+        if (name) {
+          counts[name] = (counts[name] || 0) + 1;
+          scorerOrder.push(name);
         }
-
-        return {
-            counts,
-            firstScorer: scorerOrder[0]  ?? null,
-            lastScorer:  scorerOrder[scorerOrder.length - 1] ?? null,
-        };
-    } catch (err) {
-        console.warn(` fetchGoalEvents ${fixtureId}:`, err.message);
-        return { counts: {}, firstScorer: null, lastScorer: null };
+        if (team) teamScorerOrder.push(team);
+      }
+      if (e.type === "Card" && e.detail === "Yellow Card") {
+        const name = e.player?.name;
+        if (name) cardedPlayers.push(name);
+      }
     }
+
+    return {
+      counts,
+      firstScorer:  scorerOrder[0]  ?? null,
+      lastScorer:   scorerOrder[scorerOrder.length - 1]  ?? null,
+      firstTeam:    teamScorerOrder[0] ?? null,
+      lastTeam:     teamScorerOrder[teamScorerOrder.length - 1] ?? null,
+      cardedPlayers,
+    };
+  } catch (err) {
+    console.warn(` fetchGoalEvents ${fixtureId}:`, err.message);
+    return { counts: {}, firstScorer: null, lastScorer: null, firstTeam: null, lastTeam: null, cardedPlayers: [] };
+  }
 }
 
 // Fuzzy match "Haaland" or "Erling Haaland" against event names
@@ -394,6 +423,8 @@ function evaluatePick(market, fixture, allowHT = false) {
   // 2H correct score: "2H: 2-1" or "2H: 2:1" (FT only)
   const shScore = m.match(/^2h:\s*(\d+)[:\-](\d+)$/);
   if (shScore && isFT) {
+     // Only grade if we actually have halftime data
+    if (fixture.score?.halftime?.home == null) return null;
     const sh_h = hg - htH, sh_a = ag - htA;
     return parseInt(shScore[1]) === sh_h && parseInt(shScore[2]) === sh_a ? "correct" : "wrong";
   }
@@ -440,6 +471,51 @@ function evaluatePick(market, fixture, allowHT = false) {
   if (marginA) {
     const n = parseInt(marginA[1]);
     return marginA[2] ? (ag - hg >= n ? "correct" : "wrong") : (ag - hg === n ? "correct" : "wrong");
+  }
+  // ── Second half result ───────────────────────────────────────────
+  if (fixture.score?.halftime?.home != null) {
+    const sh_h = hg - htH, sh_a = ag - htA;
+
+    if (m.includes("win 2nd half")) {
+      if (m.includes(home.toLowerCase())) return sh_h > sh_a ? "correct" : "wrong";
+      if (m.includes(away.toLowerCase())) return sh_a > sh_h ? "correct" : "wrong";
+    }
+    if (m === "draw in 2nd half") return sh_h === sh_a ? "correct" : "wrong";
+
+    // ── BTTS halves ──────────────────────────────────────────────
+    if (m.includes("both score before ht")) {
+      if (m.startsWith("yes")) return htH > 0 && htA > 0 ? "correct" : "wrong";
+      if (m.startsWith("no"))  return htH === 0 || htA === 0 ? "correct" : "wrong";
+    }
+    if (m.includes("both score after ht")) {
+      if (m.startsWith("yes")) return sh_h > 0 && sh_a > 0 ? "correct" : "wrong";
+      if (m.startsWith("no"))  return sh_h === 0 || sh_a === 0 ? "correct" : "wrong";
+    }
+    if (m.includes("both score in each half")) {
+      const bttsFH = htH > 0 && htA > 0, bttsSH = sh_h > 0 && sh_a > 0;
+      if (m.startsWith("yes")) return bttsFH && bttsSH ? "correct" : "wrong";
+      if (m.startsWith("no"))  return !(bttsFH && bttsSH) ? "correct" : "wrong";
+    }
+
+    // ── Score in both halves ─────────────────────────────────────
+    if (m.includes("score in both halves")) {
+      if (m.includes(home.toLowerCase())) return htH > 0 && sh_h > 0 ? "correct" : "wrong";
+      if (m.includes(away.toLowerCase())) return htA > 0 && sh_a > 0 ? "correct" : "wrong";
+    }
+
+    // ── HT / FT combos ──────────────────────────────────────────
+    const htR = htH > htA ? "home" : htH < htA ? "away" : "draw";
+    const ftR = hg  > ag  ? "home" : hg  < ag  ? "away" : "draw";
+
+    if (m === "home at ht & ft")  return htR === "home" && ftR === "home" ? "correct" : "wrong";
+    if (m === "draw at ht & ft")  return htR === "draw" && ftR === "draw" ? "correct" : "wrong";
+    if (m === "away at ht & ft")  return htR === "away" && ftR === "away" ? "correct" : "wrong";
+    if (m === "draw to home win") return htR === "draw" && ftR === "home" ? "correct" : "wrong";
+    if (m === "away to home win") return htR === "away" && ftR === "home" ? "correct" : "wrong";
+    if (m === "home to draw")     return htR === "home" && ftR === "draw" ? "correct" : "wrong";
+    if (m === "away to draw")     return htR === "away" && ftR === "draw" ? "correct" : "wrong";
+    if (m === "home to away win") return htR === "home" && ftR === "away" ? "correct" : "wrong";
+    if (m === "draw to away win") return htR === "draw" && ftR === "away" ? "correct" : "wrong";
   }
 
   return null;
@@ -592,74 +668,202 @@ async function resolvePlayerGoalPicks(fixtureId, pendingPicks, profileCache) {
 
 
 async function resolvePicksForMatch(fixture, allowHT = false) {
-    const { data: picks } = await supabaseAdmin
-        .from("picks").select("*").eq("result", "pending")
-        .ilike("match", `%${fixture.teams.home.name}%`);
-    if (!picks?.length) return 0;
+  const { data: picks } = await supabaseAdmin
+    .from("picks").select("*").eq("result", "pending")
+    .ilike("match", `%${fixture.teams.home.name}%`);
+  if (!picks?.length) return 0;
 
-    let resolved = 0;
-    const comboIdsToCheck = new Set();
-    const profileCache    = {};
+  const home = fixture.teams.home.name;
+  const away = fixture.teams.away.name;
+  let resolved = 0;
+  const comboIdsToCheck = new Set();
+  const profileCache = {};
 
-    // ── Pass 1: standard market resolution ───────────────────────────────────
-    for (const pick of picks) {
-        if (!pick.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase())) continue;
-        const result = evaluatePick(pick.market, fixture, allowHT);  // <-- pass allowHT
+  // ── Pass 1: standard + HT-derived markets ────────────────────────────────
+  for (const pick of picks) {
+    if (!pick.match.toLowerCase().includes(away.toLowerCase())) continue;
+    const result = evaluatePick(pick.market, fixture, allowHT);
+    if (!result) continue;
+
+    const prob = pick.probability || Math.min(99, Math.max(1, Math.round(100.0 / (pick.odds || 2.0))));
+    const { data: profile } = await supabaseAdmin.from("profiles").select("*").eq("id", pick.user_id).single();
+    if (!profile) continue;
+
+    profileCache[pick.user_id] = profile;
+    let ns = 0, fp = 0;
+    if (result === "correct") {
+      ns = (profile.current_streak || 0) + 1;
+      fp = Math.round(calcPointsWin(prob) * getStreakMultiplier(ns) * getDailyBonus(profile.daily_streak));
+    } else {
+      fp = 0;
+    }
+    const du = updateDailyStreak(profile);
+    await supabaseAdmin.from("picks").update({ result, points_earned: fp }).eq("id", pick.id);
+    await supabaseAdmin.from("profiles").update({
+      current_streak:    result === "correct" ? ns : 0,
+      best_streak:       Math.max(profile.best_streak || 0, ns),
+      total_points:      (profile.total_points  || 0) + fp,
+      weekly_points:     (profile.weekly_points || 0) + fp,
+      daily_streak:      du.daily_streak,
+      best_daily_streak: du.best_daily_streak,
+      last_pick_date:    du.last_pick_date,
+    }).eq("id", pick.user_id);
+    resolved++;
+    if (pick.combo_id) comboIdsToCheck.add(pick.combo_id);
+  }
+
+  // ── Pass 2: events-based markets (FT only) ────────────────────────────────
+  if (!allowHT) {
+    const { data: stillPending } = await supabaseAdmin
+      .from("picks").select("*").eq("result", "pending")
+      .ilike("match", `%${home}%`);
+
+    const eventsPicks = (stillPending || []).filter(p => {
+      if (!p.match.toLowerCase().includes(away.toLowerCase())) return false;
+      const m = p.market.toLowerCase();
+      return /\((anytime|1st goal|last goal|2\+ goals|hat-trick|booked)\)/i.test(p.market)
+        || m.includes("score first")
+        || m.includes("score last")
+        || m === "no goals in the match";
+    });
+
+    if (eventsPicks.length > 0) {
+      const { counts, firstScorer, lastScorer, firstTeam, lastTeam, cardedPlayers } =
+        await fetchGoalEvents(fixture.fixture.id);
+
+      // Player goalscorers
+      const goalPicks = eventsPicks.filter(p => /\((anytime|1st goal|last goal|2\+ goals|hat-trick)\)/i.test(p.market));
+      if (goalPicks.length > 0) {
+        const gr = await resolvePlayerGoalPicks(fixture.fixture.id, goalPicks, profileCache);
+        resolved += gr;
+        goalPicks.forEach(p => { if (p.combo_id) comboIdsToCheck.add(p.combo_id); });
+      }
+
+      // First/last team to score
+      for (const pick of eventsPicks) {
+        const m = pick.market.toLowerCase();
+        let result = null;
+
+        if (m.includes("score first")) {
+          if (m === "no goals in the match") {
+            result = firstTeam === null ? "correct" : "wrong";
+          } else if (m.includes(home.toLowerCase())) {
+            result = firstTeam === home ? "correct" : "wrong";
+          } else if (m.includes(away.toLowerCase())) {
+            result = firstTeam === away ? "correct" : "wrong";
+          }
+        } else if (m.includes("score last")) {
+          if (m.includes(home.toLowerCase())) {
+            result = lastTeam === home ? "correct" : "wrong";
+          } else if (m.includes(away.toLowerCase())) {
+            result = lastTeam === away ? "correct" : "wrong";
+          }
+        } else if (/\(booked\)/i.test(pick.market)) {
+          const matched = fuzzyMatch(pick.market, cardedPlayers);
+          result = matched ? "correct" : "wrong";
+        }
+
         if (!result) continue;
-
         const prob = pick.probability || Math.min(99, Math.max(1, Math.round(100.0 / (pick.odds || 2.0))));
-        const { data: profile } = await supabaseAdmin.from("profiles").select("*").eq("id", pick.user_id).single();
+        let profile = profileCache[pick.user_id];
+        if (!profile) {
+          const { data } = await supabaseAdmin.from("profiles").select("*").eq("id", pick.user_id).single();
+          profile = data;
+          profileCache[pick.user_id] = profile;
+        }
         if (!profile) continue;
 
-        profileCache[pick.user_id] = profile;
         let ns = 0, fp = 0;
         if (result === "correct") {
-            ns = (profile.current_streak || 0) + 1;
-            fp = Math.round(calcPointsWin(prob) * getStreakMultiplier(ns) * getDailyBonus(profile.daily_streak));
+          ns = (profile.current_streak || 0) + 1;
+          fp = Math.round(calcPointsWin(prob) * getStreakMultiplier(ns) * getDailyBonus(profile.daily_streak));
         } else {
-            fp = -calcPointsLoss(prob);
+          fp = 0;
         }
         const du = updateDailyStreak(profile);
         await supabaseAdmin.from("picks").update({ result, points_earned: fp }).eq("id", pick.id);
         await supabaseAdmin.from("profiles").update({
-            current_streak:    result === "correct" ? ns : 0,
-            best_streak:       Math.max(profile.best_streak || 0, ns),
-            total_points:      (profile.total_points  || 0) + fp,
-            weekly_points:     (profile.weekly_points || 0) + fp,
-            daily_streak:      du.daily_streak,
-            best_daily_streak: du.best_daily_streak,
-            last_pick_date:    du.last_pick_date,
+          current_streak:    result === "correct" ? ns : 0,
+          best_streak:       Math.max(profile.best_streak || 0, ns),
+          total_points:      (profile.total_points  || 0) + fp,
+          weekly_points:     (profile.weekly_points || 0) + fp,
+          daily_streak:      du.daily_streak,
+          best_daily_streak: du.best_daily_streak,
+          last_pick_date:    du.last_pick_date,
         }).eq("id", pick.user_id);
         resolved++;
         if (pick.combo_id) comboIdsToCheck.add(pick.combo_id);
+      }
     }
 
-    // ── Pass 2: player goalscorer resolution (FT only) ────────────────────────
-    if (!allowHT) {
-        const { data: stillPending } = await supabaseAdmin
-            .from("picks").select("*").eq("result", "pending")
-            .ilike("match", `%${fixture.teams.home.name}%`);
+    // ── Pass 3: statistics-based markets (corners, shots) ───────────────────
+    const { data: statsPending } = await supabaseAdmin
+      .from("picks").select("*").eq("result", "pending")
+      .ilike("match", `%${home}%`);
 
-        const playerPicks = (stillPending || []).filter(p =>
-            p.match.toLowerCase().includes(fixture.teams.away.name.toLowerCase()) &&
-            /\((anytime|1st goal|last goal|2\+ goals|hat-trick)\)/i.test(p.market)
-        );
+    const statsPicks = (statsPending || []).filter(p => {
+      if (!p.match.toLowerCase().includes(away.toLowerCase())) return false;
+      const m = p.market.toLowerCase();
+      return m.includes("corner") || m.includes("shots");
+    });
 
-        if (playerPicks.length > 0) {
-            const playerResolved = await resolvePlayerGoalPicks(
-                fixture.fixture.id, playerPicks, profileCache
-            );
-            resolved += playerResolved;
-            playerPicks.forEach(p => { if (p.combo_id) comboIdsToCheck.add(p.combo_id); });
+    if (statsPicks.length > 0) {
+      const { corners, shots } = await fetchStatistics(fixture.fixture.id);
+
+      for (const pick of statsPicks) {
+        const m = pick.market.toLowerCase();
+        let result = null;
+
+        const overCorner  = m.match(/over (\d+\.?\d*) corners/);
+        const underCorner = m.match(/under (\d+\.?\d*) corners/);
+        const overShots   = m.match(/over (\d+\.?\d*) shots/);
+        const underShots  = m.match(/under (\d+\.?\d*) shots/);
+
+        if (overCorner  && corners !== null) result = corners > parseFloat(overCorner[1])  ? "correct" : "wrong";
+        if (underCorner && corners !== null) result = corners < parseFloat(underCorner[1]) ? "correct" : "wrong";
+        if (overShots   && shots   !== null) result = shots   > parseFloat(overShots[1])   ? "correct" : "wrong";
+        if (underShots  && shots   !== null) result = shots   < parseFloat(underShots[1])  ? "correct" : "wrong";
+
+        if (!result) continue;
+        const prob = pick.probability || Math.min(99, Math.max(1, Math.round(100.0 / (pick.odds || 2.0))));
+        let profile = profileCache[pick.user_id];
+        if (!profile) {
+          const { data } = await supabaseAdmin.from("profiles").select("*").eq("id", pick.user_id).single();
+          profile = data;
+          profileCache[pick.user_id] = profile;
         }
-    }
+        if (!profile) continue;
 
-    // ── Pass 3: combo partial credit ─────────────────────────────────────────
-    for (const comboId of comboIdsToCheck) {
-        await resolveCombo(comboId);
+        let ns = 0, fp = 0;
+        if (result === "correct") {
+          ns = (profile.current_streak || 0) + 1;
+          fp = Math.round(calcPointsWin(prob) * getStreakMultiplier(ns) * getDailyBonus(profile.daily_streak));
+        } else {
+          fp = 0;
+        }
+        const du = updateDailyStreak(profile);
+        await supabaseAdmin.from("picks").update({ result, points_earned: fp }).eq("id", pick.id);
+        await supabaseAdmin.from("profiles").update({
+          current_streak:    result === "correct" ? ns : 0,
+          best_streak:       Math.max(profile.best_streak || 0, ns),
+          total_points:      (profile.total_points  || 0) + fp,
+          weekly_points:     (profile.weekly_points || 0) + fp,
+          daily_streak:      du.daily_streak,
+          best_daily_streak: du.best_daily_streak,
+          last_pick_date:    du.last_pick_date,
+        }).eq("id", pick.user_id);
+        resolved++;
+        if (pick.combo_id) comboIdsToCheck.add(pick.combo_id);
+      }
     }
+  }
 
-    return resolved;
+  // ── Pass 4: combo resolution ──────────────────────────────────────────────
+  for (const comboId of comboIdsToCheck) {
+    await resolveCombo(comboId);
+  }
+
+  return resolved;
 }
 // ── ROUTES ────────────────────────────────────────────────────────────────────
 app.get("/", (req,res) => res.send("Predkt API 🚀"));
@@ -914,7 +1118,7 @@ app.post("/api/refresh-cache", requireAdmin, async(req,res)=>{
 
 app.post("/api/auto-resolve", async (req, res) => {
   try {
-    const f = await apiFetch("/fixtures", { status: "FT", from: dateStr(-7), to: dateStr(0) });
+    const f = await apiFetch("/fixtures", { status: "FT", from: dateStr(-8), to: dateStr(0) });
     let t = 0;
     for (const x of f) { t += await resolvePicksForMatch(x); }
     res.json({ ok: true, resolved: t });
@@ -928,7 +1132,7 @@ app.post("/api/resolve", requireAdmin, async(req,res)=>{
   const prob=pick.probability||Math.min(99,Math.max(1,Math.round(100.0/(pick.odds||2.0))));
   let ns=0,fp=0;
   if(result==="correct"){ns=(profile.current_streak||0)+1;fp=Math.round(calcPointsWin(prob)*getStreakMultiplier(ns)*getDailyBonus(profile.daily_streak));}
-  else{fp=-calcPointsLoss(prob);}
+  else{fp=0;}
   const du=updateDailyStreak(profile);
   await supabaseAdmin.from("picks").update({result,points_earned:fp}).eq("id",pickId);
   await supabaseAdmin.from("profiles").update({current_streak:result==="correct"?ns:0,best_streak:Math.max(profile.best_streak||0,ns),total_points:(profile.total_points||0)+fp,weekly_points:(profile.weekly_points||0)+fp,daily_streak:du.daily_streak,best_daily_streak:du.best_daily_streak,last_pick_date:du.last_pick_date}).eq("id",pick.user_id);

@@ -10,7 +10,7 @@ struct Pick: Identifiable, Codable {
     let difficulty: String?
     let difficulty_multiplier: Double?
     let points_possible: Int
-    let points_lost: Int
+   
     let result: String          // "pending", "correct", "wrong"
     let points_earned: Int?     // set when resolved
     let streak_multiplier: Double?
@@ -23,7 +23,7 @@ struct Pick: Identifiable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case id, user_id, match, market, confidence, odds, difficulty
-        case difficulty_multiplier, points_possible, points_lost, result
+        case difficulty_multiplier, points_possible, result
         case points_earned, streak_multiplier, points_before_multiplier
         case created_at, username, profiles, combo_id, probability
     }

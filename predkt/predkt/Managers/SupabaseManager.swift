@@ -165,7 +165,6 @@ final class SupabaseManager: ObservableObject {
             "odds":            .double(odds),
             "probability":     .integer(probability),
             "points_possible": .integer(pointsPossible),
-            "points_lost":     .integer(pointsLost),
             "result":          .string("pending"),
             // Legacy compatibility
             "confidence":      .integer(probability),
