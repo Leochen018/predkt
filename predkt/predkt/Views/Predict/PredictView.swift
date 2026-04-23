@@ -9,6 +9,26 @@ struct PredictView: View {
     @State private var selectedMatch: Match?
     @State private var myPicksCount = 0
     @State private var showingLimitAlert = false
+    
+    
+    private func isPickFromToday(_ createdAt: String) -> Bool {
+            let iso1 = ISO8601DateFormatter()
+            iso1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = iso1.date(from: createdAt) { return Calendar.current.isDateInToday(d) }
+            let iso2 = ISO8601DateFormatter()
+            iso2.formatOptions = [.withInternetDateTime]
+            if let d = iso2.date(from: createdAt) { return Calendar.current.isDateInToday(d) }
+            let f = DateFormatter()
+            f.timeZone = TimeZone(identifier: "UTC")
+            f.locale = Locale(identifier: "en_US_POSIX")
+            for fmt in ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss.SSSSSS"] {
+                f.dateFormat = fmt
+                if let d = f.date(from: createdAt) { return Calendar.current.isDateInToday(d) }
+            }
+            return false
+        }
+
+      
 
     var body: some View {
         ZStack {
@@ -23,15 +43,8 @@ struct PredictView: View {
             Task {
                 await viewModel.loadMatches()
                 if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
-                    let todayStart = Calendar.current.startOfDay(for: Date())
-                    let f = DateFormatter()
-                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-                    f.timeZone = TimeZone(identifier: "UTC")
-                    f.locale = Locale(identifier: "en_US_POSIX")
-                    let todayPicks = picks.filter {
-                        guard let d = f.date(from: $0.created_at) else { return false }
-                        return Calendar.current.startOfDay(for: d) == todayStart
-                    }
+                    
+                    let todayPicks = picks.filter { isPickFromToday($0.created_at) }
                     myPicksCount = Set(todayPicks.map { $0.match }).count
                     viewModel.predictedTodayMatches = Set(todayPicks.map { $0.match })
                 }
@@ -60,15 +73,8 @@ struct PredictView: View {
                         }
                         Task {
                             if let picks = try? await SupabaseManager.shared.fetchMyPicks() {
-                                let todayStart = Calendar.current.startOfDay(for: Date())
-                                let f = DateFormatter()
-                                f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-                                f.timeZone = TimeZone(identifier: "UTC")
-                                f.locale = Locale(identifier: "en_US_POSIX")
-                                let todayPicks = picks.filter {
-                                    guard let d = f.date(from: $0.created_at) else { return false }
-                                    return Calendar.current.startOfDay(for: d) == todayStart
-                                }
+                                
+                                let todayPicks = picks.filter { isPickFromToday($0.created_at) }
                                 myPicksCount = Set(todayPicks.map { $0.match }).count
                                 viewModel.predictedTodayMatches = Set(todayPicks.map { $0.match })
                             }
