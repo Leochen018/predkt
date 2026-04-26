@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 yarn.lock
 Pods/
 Podfile.lock
@@ -23,22 +22,19 @@ files/build/
 files/.vercel/
 
 # iOS build artifacts
-ios/**/.build/
-ios/**/build/
-ios/**/*.xcarchive/
-ios/**/DerivedData/
-ios/**/*.ipa
-ios/**/Pods/
-ios/**/Podfile.lock
+*.xcarchive
+*.ipa
+DerivedData/
 
-# Xcode
-ios/**/*.xcworkspace/xcuserdata/
-ios/**/*.xcodeproj/xcuserdata/
-ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
-ios/**/*.pbxuser
-ios/**/*.perspective*
-ios/**/*.mode1v3
-ios/**/*.mode2v3
+# Xcode user data
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.pbxuser
+*.perspective*
+*.mode1v3
+*.mode2v3
+*.xcuserstate
 
 # Logs
 logs/
@@ -46,7 +42,6 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-lerna-debug.log*
 
 # IDE & Editors
 .vscode/
@@ -54,24 +49,15 @@ lerna-debug.log*
 *.swp
 *.swo
 *~
-*.iml
 .eslintcache
-.stylelintcache
-.prettierignore
 
 # OS
 .DS_Store
 Thumbs.db
 ._*
-.AppleDouble
-.LSOverride
 
 # Temp & Cache
 .cache/
 .tmp/
 *.tmp
-dist-ssr/
 coverage/
-
-# Railway
-railway.json
